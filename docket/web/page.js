@@ -208,11 +208,21 @@ window.docketPage = function (el, opts = {}) {
   const feedOf = (d, t) => t.aag && (((d.aag || {}).feed || {}).tasks || []).find((x) => "aag-" + x.id === t.id);
   const sessionsOf = (d, t) => (t.sessions || []).map((n) => (d.sessions || []).find((s) => s.title === n && !s.agent)).filter(Boolean);
   const mins = (since) => { const m = Math.round((Date.now() - Date.parse(since)) / 60e3); return m < 60 ? m + " min" : Math.round(m / 60) + " h"; };
+  // whom your agent waits on, by name where aag has it. aag's "humans" isn't you: when it's your
+  // approval aag says so (needs_you); a review the agents agree on waits for a draft to be made ready
+  // (the author), then for the other reviewers and the merge.
+  function waitingOn(f) {
+    const w = f.waiting, names = (w.names || []).join(", "), what = String(w.what || w.who || "").replace(/^humans: /, "");
+    if (w.who === "owner") return "you";
+    if (w.who === "people" && !names && f.pr && f.pr.draft) return "the author: still a draft";
+    if (w.who === "people" && !names) return "others: " + what;
+    return names ? `${names}: ${what}` : what;
+  }
   function whoIsOn(d, t) {
     const f = feedOf(d, t), out = [];
     if (f && f.now) out.push(`<span class="st go">agent working · ${mins(f.now.since)}</span>`);
     else if (f && f.column === "needs_you") out.push(`<span class="st bad">agent: your move</span>`);
-    else if (f && f.waiting) out.push(`<span class="st wait">agent waiting on ${esc(f.waiting.who === "owner" ? "you" : f.waiting.what || f.waiting.who)}</span>`);
+    else if (f && f.waiting) out.push(`<span class="st wait">agent waiting on ${esc(waitingOn(f))}</span>`);
     else if (f && f.column === "waiting") out.push(`<span class="st wait">agent waiting</span>`);
     else if (t.aag) out.push(`<span class="st">your agent</span>`);
     const ses = sessionsOf(d, t), running = ses.filter((x) => x.state === "running").length;
