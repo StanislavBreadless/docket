@@ -212,7 +212,7 @@ window.docketPage = function (el, opts = {}) {
   // approval aag says so (needs_you); a review the agents agree on waits for a draft to be made ready
   // (the author), then for the other reviewers and the merge.
   function waitingOn(f) {
-    const w = f.waiting, names = (w.names || []).join(", "), what = String(w.what || w.who || "").replace(/^humans: /, "");
+    const w = f.waiting, names = (w.names || []).join(", "), what = String(w.what || w.who || "").replace(/^(humans|the author): /, "");
     if (w.who === "owner") return "you";
     if (w.who === "people" && !names && f.pr && f.pr.draft) return "the author: still a draft";
     if (w.who === "people" && !names) return "others: " + what;
