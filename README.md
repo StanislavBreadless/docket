@@ -18,6 +18,10 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
   - A task is done only with evidence: a draft isn't sent, silence isn't done.
   - A review asked of you is done once `gh` shows you approved the PR, within a few minutes,
     without waiting for the next refresh.
+  - A task about one PR (a review, or a task whose links all go to that PR) is done once the PR is
+    merged or closed, checked with `gh` every few minutes. Open it again and it stays open.
+  - Each refresh also rechecks the open tasks' own links: a Slack question that was answered (by you or
+    someone else), a closed issue, a merged PR, each closes its task with the link as evidence.
   - A task you dropped or finished doesn't come back.
   - An overdue task rolls to today and shows how often it slipped.
 - **Reply to Claude** on a task (`c`): "ask Sam for a review in the team thread". It finds the thread,
@@ -46,8 +50,9 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
   - **Work** is your real work as one list in the order you'll do it, only what you put there: one
     row per piece of work, with whoever is on it. A Linear issue or review, deep work that isn't on
     Linear yet ([below](#work-linear)), and everything your agent does: its task for an issue shows on
-    the issue's row; a row of its own is greyed while the agent works or waits, and active when it's
-    your move (say go, sign, answer). The Claude sessions working on it show on the row too. Drag a
+    the issue's row, first, as **agent working** / **agent: your move** / **agent waiting**. A row your
+    agent is on (its own, or the issue's) is greyed and never **next** while the agent works or waits,
+    and active again when it's your move (say go, sign, answer). The Claude sessions working on it show on the row too. Drag a
     row by its grip to reorder (the page scrolls while you hold it near an edge), or `Shift+J` /
     `Shift+K`. Rows waiting on someone, or snoozed or planned for a later day, stay in their place, greyed (there's no Waiting or Later fold here),
     and the first one you can act on is marked **next**. A row says its Linear issue and its status there

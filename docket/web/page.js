@@ -219,6 +219,11 @@ window.docketPage = function (el, opts = {}) {
     if (ses.length) out.push(`⌁ ${ses.length} session${ses.length > 1 ? "s" : ""}${running ? ` (${running} running)` : ""}`);
     return out;
   }
+  // your agent is on it and it isn't your move: working, or waiting on others (greyed in Work, not next)
+  const busy = (t, d) => {
+    const fs = [t, ...agentsOn(d, t)].map((x) => feedOf(d, x)).filter(Boolean);
+    return fs.length > 0 && fs.some((f) => f.now || f.column === "working" || f.column === "waiting") && !fs.some((f) => f.column === "needs_you");
+  };
   // Work has what you put in your order; everything else, new work too, is in Triage, where you decide on
   // it (→ Work puts it in its place). Your agent's task for an issue shows on the issue's card.
   const inWork = (t, d) => work(t) && place(d, t) < Infinity;
@@ -402,7 +407,7 @@ window.docketPage = function (el, opts = {}) {
       : `<p class="title">No tasks yet.</p><p class="meta">The first refresh reads the last 3 days of whatever your Claude Code is connected to: Slack, email, calendar, GitHub, Linear, Notion. It takes a few minutes.</p>`,
   });
   views.work = docket(box("work"), {
-    ...base("work"), show: inWork,
+    ...base("work"), show: inWork, busy,
     actions: [...base("work").actions, "triage"],
     can: (t, a) => a !== "triage" || (!t.linear && !t.issue && !t.aag),  // an issue's and your agent's work stay Work
     queue: { heading: "Your order", empty: "Nothing in your order yet: new work comes in Triage, where → Work puts it in its place." },
