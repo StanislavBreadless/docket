@@ -219,6 +219,34 @@ def reviewed(reg, approved, now):
     return changed
 
 
+def pr_of(t):
+    """The one PR a task is about, as pr_key gives it: its "review" link; or the one PR it links, when
+    all its links go there or it's titled Review…/Approve…; else None."""
+    key = pr_key(t.get("review"))
+    keys = {pr_key(s["link"]) for s in t.get("sources") or [] if s.get("link")}
+    prs = keys - {None}
+    if key or len(prs) != 1:
+        return key
+    return prs.pop() if None not in keys or t["title"].casefold().startswith(ASKS_REVIEW) else None
+
+
+def settled(reg, ended, now):
+    """Closes the open tasks about a PR (pr_of) that's been merged or closed: `ended` is {pr_key:
+    {"merged": bool, "at": when}}. Even one whose status you set, as there's nothing left to do or
+    wait for; but once only, so a task you open again stays open. Not your agent's or Linear's (aag and
+    linear.py have the say on those). Returns whether anything changed."""
+    changed = False
+    for t in reg["tasks"]:
+        key = pr_of(t)
+        if t["status"] not in OPEN or t.get("aag") or t.get("linear") or key not in ended or t.get("ended") == key:
+            continue
+        e = ended[key]
+        t.update(status="done", done_at=now, closed_by="gh", updated=now, ended=key,
+                 evidence=f"{key} was {'merged' if e.get('merged') else 'closed without merging'}{_at(e.get('at'), now)}")
+        changed = True
+    return changed
+
+
 def _at(stamp, now):
     """" at 11:43" on this computer's clock (with the day, when it's not today); "" if it's no time."""
     try:

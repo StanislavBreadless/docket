@@ -212,8 +212,9 @@ window.docketPage = function (el, opts = {}) {
     const f = feedOf(d, t), out = [];
     if (f && f.now) out.push(`<span class="st go">agent working · ${mins(f.now.since)}</span>`);
     else if (f && f.column === "needs_you") out.push(`<span class="st bad">agent: your move</span>`);
-    else if (f && f.waiting) out.push(`agent waiting on ${esc(f.waiting.who === "owner" ? "you" : f.waiting.what || f.waiting.who)}`);
-    else if (t.aag) out.push("your agent");
+    else if (f && f.waiting) out.push(`<span class="st wait">agent waiting on ${esc(f.waiting.who === "owner" ? "you" : f.waiting.what || f.waiting.who)}</span>`);
+    else if (f && f.column === "waiting") out.push(`<span class="st wait">agent waiting</span>`);
+    else if (t.aag) out.push(`<span class="st">your agent</span>`);
     const ses = sessionsOf(d, t), running = ses.filter((x) => x.state === "running").length;
     if (ses.length) out.push(`⌁ ${ses.length} session${ses.length > 1 ? "s" : ""}${running ? ` (${running} running)` : ""}`);
     return out;
@@ -283,8 +284,10 @@ window.docketPage = function (el, opts = {}) {
       // the issue as Linear has it: its key and status (In Progress, In Review…), and whether it's your review
       const on = i || (t.issue && (issueOf(d, t) || {}).linear);
       const issue = on ? `${esc(on.key || t.issue)} <span class="lstate">${esc(on.state || "")}</span>${on.role === "reviewer" ? " · your review" : ""}` : t.issue && esc(t.issue);
-      return [issue || notOnLinear(d, t, true), prLinks(d, t),
-              ...whoIsOn(d, t), ...helpers.map((x) => `agent: ${esc(x.next)}`),
+      // who's on it first, so a long line never cuts it off: your agent's run on this issue (working,
+      // your move, waiting), with what it does now as the tooltip
+      const agents = helpers.map((x) => { const w = whoIsOn(d, x)[0]; return w && `<span title="${esc(x.next)}">${w}</span>`; });
+      return [...agents, ...whoIsOn(d, t), issue || notOnLinear(d, t, true), prLinks(d, t),
               `<span class="${t.est ? "" : "meta"}">${dur(est(t))}</span>`].filter(Boolean).join(" · ");
     }
     const pick = `<div class="estpick"><span class="meta">Takes</span>${EST.map((m) => `<button data-act="est" data-value="${m}"${t.est === m ? ' class="on"' : ""}>${dur(m)}</button>`).join("")}${t.est ? "" : `<span class="meta">(${dur(est(t))} until you say)</span>`}</div>`;
