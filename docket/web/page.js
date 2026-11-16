@@ -175,8 +175,8 @@ window.docketPage = function (el, opts = {}) {
       + (f && f.offline ? `<p class="meta"><span class="st wait">Offline</span>: no ${[f.offline.slack && "Slack", f.offline.github && "GitHub"].filter(Boolean).join(" or ")}; nothing reaches the agents.</p>` : "")
       + (f && f.sign ? `<p class="meta">To sign ${esc(f.sign.prs.join(", "))}: <code>${esc(f.sign.command)}</code></p>` : "");
     if (!f) return head || `<p class="empty">Reading your agent…</p>`;
-    // as on the list (aag.py finished): a review the agents agree on is done for you, and done shows for the day
-    const col = (t) => t.column === "done" || (t.role === "reviewer" && t.status === "agents_done" && t.column !== "needs_you") ? "done" : t.column;
+    // as aag has it (aag.py finished: a review the agents agree on waits on the humans); done shows for the day
+    const col = (t) => t.column;
     // every task it has open (and done today), whether or not it's on your list: the card is where you see your agent
     const listed = new Set((data.tasks || []).map((x) => x.id));
     const shown = f.tasks.filter((t) => col(t) !== "done" || new Date(t.statusAt || t.updatedAt).toLocaleDateString("sv") === data.today);
@@ -208,16 +208,32 @@ window.docketPage = function (el, opts = {}) {
   const feedOf = (d, t) => t.aag && (((d.aag || {}).feed || {}).tasks || []).find((x) => "aag-" + x.id === t.id);
   const sessionsOf = (d, t) => (t.sessions || []).map((n) => (d.sessions || []).find((s) => s.title === n && !s.agent)).filter(Boolean);
   const mins = (since) => { const m = Math.round((Date.now() - Date.parse(since)) / 60e3); return m < 60 ? m + " min" : Math.round(m / 60) + " h"; };
+  // whom your agent waits on, by name where aag has it. aag's "humans" isn't you: when it's your
+  // approval aag says so (needs_you); a review the agents agree on waits for a draft to be made ready
+  // (the author), then for the other reviewers and the merge.
+  function waitingOn(f) {
+    const w = f.waiting, names = (w.names || []).join(", "), what = String(w.what || w.who || "").replace(/^humans: /, "");
+    if (w.who === "owner") return "you";
+    if (w.who === "people" && !names && f.pr && f.pr.draft) return "the author: still a draft";
+    if (w.who === "people" && !names) return "others: " + what;
+    return names ? `${names}: ${what}` : what;
+  }
   function whoIsOn(d, t) {
     const f = feedOf(d, t), out = [];
     if (f && f.now) out.push(`<span class="st go">agent working · ${mins(f.now.since)}</span>`);
     else if (f && f.column === "needs_you") out.push(`<span class="st bad">agent: your move</span>`);
-    else if (f && f.waiting) out.push(`agent waiting on ${esc(f.waiting.who === "owner" ? "you" : f.waiting.what || f.waiting.who)}`);
-    else if (t.aag) out.push("your agent");
+    else if (f && f.waiting) out.push(`<span class="st wait">agent waiting on ${esc(waitingOn(f))}</span>`);
+    else if (f && f.column === "waiting") out.push(`<span class="st wait">agent waiting</span>`);
+    else if (t.aag) out.push(`<span class="st">your agent</span>`);
     const ses = sessionsOf(d, t), running = ses.filter((x) => x.state === "running").length;
     if (ses.length) out.push(`⌁ ${ses.length} session${ses.length > 1 ? "s" : ""}${running ? ` (${running} running)` : ""}`);
     return out;
   }
+  // your agent is on it and it isn't your move: working, or waiting on others (greyed in Work, not next)
+  const busy = (t, d) => {
+    const fs = [t, ...agentsOn(d, t)].map((x) => feedOf(d, x)).filter(Boolean);
+    return fs.length > 0 && fs.some((f) => f.now || f.column === "working" || f.column === "waiting") && !fs.some((f) => f.column === "needs_you");
+  };
   // Work has what you put in your order; everything else, new work too, is in Triage, where you decide on
   // it (→ Work puts it in its place). Your agent's task for an issue shows on the issue's card.
   const inWork = (t, d) => work(t) && place(d, t) < Infinity;
@@ -283,8 +299,10 @@ window.docketPage = function (el, opts = {}) {
       // the issue as Linear has it: its key and status (In Progress, In Review…), and whether it's your review
       const on = i || (t.issue && (issueOf(d, t) || {}).linear);
       const issue = on ? `${esc(on.key || t.issue)} <span class="lstate">${esc(on.state || "")}</span>${on.role === "reviewer" ? " · your review" : ""}` : t.issue && esc(t.issue);
-      return [issue || notOnLinear(d, t, true), prLinks(d, t),
-              ...whoIsOn(d, t), ...helpers.map((x) => `agent: ${esc(x.next)}`),
+      // who's on it first, so a long line never cuts it off: your agent's run on this issue (working,
+      // your move, waiting), with what it does now as the tooltip
+      const agents = helpers.map((x) => { const w = whoIsOn(d, x)[0]; return w && `<span title="${esc(x.next)}">${w}</span>`; });
+      return [...agents, ...whoIsOn(d, t), issue || notOnLinear(d, t, true), prLinks(d, t),
               `<span class="${t.est ? "" : "meta"}">${dur(est(t))}</span>`].filter(Boolean).join(" · ");
     }
     const pick = `<div class="estpick"><span class="meta">Takes</span>${EST.map((m) => `<button data-act="est" data-value="${m}"${t.est === m ? ' class="on"' : ""}>${dur(m)}</button>`).join("")}${t.est ? "" : `<span class="meta">(${dur(est(t))} until you say)</span>`}</div>`;
@@ -399,7 +417,7 @@ window.docketPage = function (el, opts = {}) {
       : `<p class="title">No tasks yet.</p><p class="meta">The first refresh reads the last 3 days of whatever your Claude Code is connected to: Slack, email, calendar, GitHub, Linear, Notion. It takes a few minutes.</p>`,
   });
   views.work = docket(box("work"), {
-    ...base("work"), show: inWork,
+    ...base("work"), show: inWork, busy,
     actions: [...base("work").actions, "triage"],
     can: (t, a) => a !== "triage" || (!t.linear && !t.issue && !t.aag),  // an issue's and your agent's work stay Work
     queue: { heading: "Your order", empty: "Nothing in your order yet: new work comes in Triage, where → Work puts it in its place." },

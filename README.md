@@ -18,6 +18,10 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
   - A task is done only with evidence: a draft isn't sent, silence isn't done.
   - A review asked of you is done once `gh` shows you approved the PR, within a few minutes,
     without waiting for the next refresh.
+  - A task about one PR (a review, or a task whose links all go to that PR) is done once the PR is
+    merged or closed, checked with `gh` every few minutes. Open it again and it stays open.
+  - Each refresh also rechecks the open tasks' own links: a Slack question that was answered (by you or
+    someone else), a closed issue, a merged PR, each closes its task with the link as evidence.
   - A task you dropped or finished doesn't come back.
   - An overdue task rolls to today and shows how often it slipped.
 - **Reply to Claude** on a task (`c`): "ask Sam for a review in the team thread". It finds the thread,
@@ -46,8 +50,9 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
   - **Work** is your real work as one list in the order you'll do it, only what you put there: one
     row per piece of work, with whoever is on it. A Linear issue or review, deep work that isn't on
     Linear yet ([below](#work-linear)), and everything your agent does: its task for an issue shows on
-    the issue's row; a row of its own is greyed while the agent works or waits, and active when it's
-    your move (say go, sign, answer). The Claude sessions working on it show on the row too. Drag a
+    the issue's row, first, as **agent working** / **agent: your move** / **agent waiting**. A row your
+    agent is on (its own, or the issue's) is greyed and never **next** while the agent works or waits,
+    and active again when it's your move (say go, sign, answer). The Claude sessions working on it show on the row too. Drag a
     row by its grip to reorder (the page scrolls while you hold it near an edge), or `Shift+J` /
     `Shift+K`. Rows waiting on someone, or snoozed or planned for a later day, stay in their place, greyed (there's no Waiting or Later fold here),
     and the first one you can act on is marked **next**. A row says its Linear issue and its status there
@@ -129,9 +134,10 @@ How the feed's tasks show:
 
 - A task whose next move is yours (say go, review, sign, merge) is on the list, linked to its DM thread
   and its PR: a quick one under **Your agent** in Triage, a deep one (a review of your own PR) in Work,
-  and one for a PR of a Linear issue on the issue's card in Work. **→ Work** / **→ Triage** moves it. One the agent works on, or that waits on others, is under **Waiting**. A finished one is
-  under **Handled today**, and so is a review once the agents agree: approving and merging it is the
-  author's and the humans' to do. A task leaves the list when aag stops listing it.
+  and one for a PR of a Linear issue on the issue's card in Work. **→ Work** / **→ Triage** moves it. One the agent works on, or that waits on others, is under **Waiting**. A review the agents agree on
+  waits too, on the humans (the author, the other reviewers, the merge), as aag's dashboard has it, until
+  aag closes it; it's your move when aag asks for your approval. A finished one is under **Handled
+  today**. A task leaves the list when aag stops listing it.
 - The **Your agent** card on the side has the rest: who has each move, what each agent is doing now,
   where each PR stands, and the links. When aag can't be read, the card keeps the last read and says
   since when.

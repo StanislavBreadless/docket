@@ -5,9 +5,9 @@ has it from two places, and they make one list:
   any other DM, so their asks become tasks wherever aag runs.
 - aag's own feed, when it can be read: `aag status --json` every minute, on this computer (found by
   itself) or over SSH where aag runs on a server. A task whose next move is yours is open, linked to
-  its DM thread and its PR; one the agent works on, or that waits on others, is waiting; a finished one
-  is handled, and so is a review once the agents agree (approving and merging it is the author's and
-  the humans' to do). The side panel's "Your agent" card has the rest: what each agent is doing now,
+  its DM thread and its PR; one the agent works on, or that waits on others, is waiting (a review the
+  agents agree on waits on the humans: the author, the other reviewers, the merge, until aag closes it);
+  a finished one is handled. The side panel's "Your agent" card has the rest: what each agent is doing now,
   and where each PR stands.
 
 The two meet in the DM thread: one task per thread. While the feed can be read it has the say on a
@@ -107,10 +107,9 @@ def _local(stamp):
 
 
 def finished(a):
-    """Done for you: closed in aag, or a review the agents agree on (aag waits on the humans for it,
-    unless it asks for your approval: then it's your move)."""
-    return a.get("column") == "done" or (a.get("role") == "reviewer" and a.get("status") == "agents_done"
-                                         and a.get("column") != "needs_you")
+    """Done for you: closed in aag. A review the agents agree on isn't: it waits on the humans (as aag's
+    dashboard has it), or is your move when aag asks for your approval."""
+    return a.get("column") == "done"
 
 
 def _fields(a, me):

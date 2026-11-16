@@ -349,6 +349,40 @@ class Prs(unittest.TestCase):
         self.assertEqual(got[old["title"]]["closed_by"], "gh")
         self.assertTrue(got[old["title"]]["evidence"].startswith("You approved org/repo#7 on GitHub"))
 
+    def test_a_task_about_a_pr_closes_once_it_is_merged_or_closed(self):
+        url = "https://github.com/Org/repo/pull/"
+        review = task(title="Look at the CI pin", review=url + "7")
+        mine = task(title="Fix CI on my PR", sources=[{"label": "github repo#8", "link": url + "8"}])
+        reply = task(title="Reply to Sam on repo#7", sources=[{"label": "a", "link": url + "7"},
+                                                               {"label": "slack", "link": "https://x.slack.com/archives/C1/p1"}])
+        old = task(title="Review repo#9", sources=[{"label": "a", "link": url + "9"}, {"label": "doc", "link": "https://example.com"}])
+        still = task(title="Review repo#10", review=url + "10")
+        linear = {**task(title="Review repo#7 on Linear", review=url + "7"), "linear": {"key": "EVM-1"}}
+        tasks.save({"tasks": [review, mine, reply, old, still, linear]})
+        tasks.act(review["id"], "waiting", None, DAY, NOW)  # yours or not: a merged PR has nothing left to wait for
+        self.assertEqual([tasks.pr_of(t) for t in (review, mine, reply, old, still)],
+                         ["org/repo#7", "org/repo#8", None, "org/repo#9", "org/repo#10"])
+        pr = lambda state, at=None: {"state": state, "mergedAt": at if state == "MERGED" else None, "closedAt": at}
+        data = {"data": {"p0": {"pullRequest": None}, "p1": {"pullRequest": pr("OPEN")},
+                         "p2": {"pullRequest": pr("MERGED", "2026-03-02T10:43:07Z")},
+                         "p3": {"pullRequest": pr("CLOSED", "2026-03-02T09:00:00Z")}, "p4": {"pullRequest": pr("MERGED", "2026-03-02T10:00:00Z")}}}
+        # sorted keys: org/repo#10, org/repo#7... p0 is a PR that's gone: the command fails, the others still count
+        answer = mock.Mock(returncode=1, stdout=json.dumps(data), stderr="gh: Could not resolve")
+        with mock.patch.object(app.subprocess, "run", return_value=answer) as run:
+            app._close_ended("gh")
+        query = run.call_args[0][0][-1]
+        self.assertIn('p1:repository(owner:"org",name:"repo"){pullRequest(number:7)', query)
+        got = {t["title"]: t for t in tasks.load()["tasks"]}
+        # p0 #10 gone, p1 #7 open, p2 #8 merged, p3 #9 closed
+        self.assertEqual([got[t["title"]]["status"] for t in (review, mine, reply, old, still, linear)],
+                         ["waiting", "done", "open", "done", "open", "open"])
+        self.assertTrue(got[mine["title"]]["evidence"].startswith("org/repo#8 was merged"))
+        self.assertTrue(got[old["title"]]["evidence"].startswith("org/repo#9 was closed without merging"))
+        tasks.act(mine["id"], "open", None, DAY, NOW)  # you open it again: it stays open
+        with mock.patch.object(app.subprocess, "run", return_value=answer):
+            app._close_ended("gh")
+        self.assertEqual(next(t for t in tasks.load()["tasks"] if t["id"] == mine["id"])["status"], "open")
+
     def test_the_refresh_names_the_pr_a_review_is_for(self):
         reg = {"tasks": []}
         tasks.merge(reg, {"new": [{"title": "Review repo#7", "review": "https://github.com/o/r/pull/7"},
