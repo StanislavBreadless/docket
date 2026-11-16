@@ -175,8 +175,8 @@ window.docketPage = function (el, opts = {}) {
       + (f && f.offline ? `<p class="meta"><span class="st wait">Offline</span>: no ${[f.offline.slack && "Slack", f.offline.github && "GitHub"].filter(Boolean).join(" or ")}; nothing reaches the agents.</p>` : "")
       + (f && f.sign ? `<p class="meta">To sign ${esc(f.sign.prs.join(", "))}: <code>${esc(f.sign.command)}</code></p>` : "");
     if (!f) return head || `<p class="empty">Reading your agent…</p>`;
-    // as on the list (aag.py finished): a review the agents agree on is done for you, and done shows for the day
-    const col = (t) => t.column === "done" || (t.role === "reviewer" && t.status === "agents_done" && t.column !== "needs_you") ? "done" : t.column;
+    // as aag has it (aag.py finished: a review the agents agree on waits on the humans); done shows for the day
+    const col = (t) => t.column;
     // every task it has open (and done today), whether or not it's on your list: the card is where you see your agent
     const listed = new Set((data.tasks || []).map((x) => x.id));
     const shown = f.tasks.filter((t) => col(t) !== "done" || new Date(t.statusAt || t.updatedAt).toLocaleDateString("sv") === data.today);
