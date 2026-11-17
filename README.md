@@ -134,9 +134,11 @@ How the feed's tasks show:
 
 - A task whose next move is yours (say go, review, sign, merge) is on the list, linked to its DM thread
   and its PR: a quick one under **Your agent** in Triage, a deep one (a review of your own PR) in Work,
-  and one for a PR of a Linear issue on the issue's card in Work. **→ Work** / **→ Triage** moves it. One the agent works on, or that waits on others, is under **Waiting**. A review the agents agree on
-  isn't on your list: the PR's own people have the move (its author marks it ready and asks for reviews;
-  others approve and merge), so it's on the **Your agent** card only. It comes to your list, as your move, when aag asks for your approval. A finished one is under **Handled
+  and one for a PR of a Linear issue on the issue's card in Work. **→ Work** / **→ Triage** moves it. One the agent works on, or that waits on others, is under **Waiting**. A review your agent does
+  because someone else's agent asked, or one the agents agree on, isn't on your list: you aren't
+  requested, and may never be (the PR's author marks it ready and picks the human reviewers). It's on
+  the **Your agent** card only. A review you asked your agent for stays on your list while it works. It
+  comes to your list, as your move, when aag asks for your approval. A finished one is under **Handled
   today**. A task leaves the list when aag stops listing it.
 - The **Your agent** card on the side has the rest: who has each move, what each agent is doing now,
   where each PR stands, and the links. When aag can't be read, the card keeps the last read and says

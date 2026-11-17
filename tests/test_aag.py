@@ -65,6 +65,14 @@ class Mapping(unittest.TestCase):
         self.assertEqual(reg["tasks"], [mine])  # yours stay
         self.assertFalse(aag.sync(reg, feed(), DAY, NOW))
 
+    def test_a_review_someone_else_asked_your_agent_for_is_on_your_list_only_once_aag_asks_you(self):
+        # the feed is valera's: kalman's agent asks hers to review
+        reg, by = synced(a("1", "working", "Reviewing", role="reviewer"),
+                         a("2", "waiting", "Waiting on the author", role="reviewer"),
+                         a("3", "working", "Reviewing", role="reviewer", requestedBy="valera"),  # she asked for it: hers
+                         a("4", "needs_you", "Your decision", role="reviewer"))
+        self.assertEqual(sorted(by), ["aag-3", "aag-4"])
+
     def test_a_review_the_agents_agree_on_is_on_your_list_only_when_aag_asks_for_your_approval(self):
         reviewed = dict(role="reviewer", status="agents_done")
         reg, by = synced(a("1", "waiting", "Reviewed; the merge is up to humans", **reviewed),

@@ -6,8 +6,8 @@ has it from two places, and they make one list:
 - aag's own feed, when it can be read: `aag status --json` every minute, on this computer (found by
   itself) or over SSH where aag runs on a server. A task whose next move is yours is open, linked to
   its DM thread and its PR; one the agent works on, or that waits on others, is waiting; a finished one
-  is handled. A review the agents agree on that aag doesn't ask you to approve isn't yours to do: it's
-  on the Your agent card only, until aag asks for your approval (then it's open) or closes it. The side panel's "Your agent" card has the rest: what each agent is doing now,
+  is handled. A review your agent does for someone else (their agent asked), or one the agents agree on,
+  asks nothing of you: it's on the Your agent card only, until aag asks you (then it's open) or closes it. The side panel's "Your agent" card has the rest: what each agent is doing now,
   and where each PR stands.
 
 The two meet in the DM thread: one task per thread. While the feed can be read it has the say on a
@@ -112,12 +112,14 @@ def finished(a):
     return a.get("column") == "done"
 
 
-def handed_on(a):
-    """A review your agent finished, the agents agreeing, that aag doesn't ask you to approve: it waits
-    on the PR's own people (its author marks it ready and asks for reviews; others approve and merge).
-    Not on your list, then, only on the Your agent card: as aag has it, it's no one's ask of you yet.
-    When aag asks for your approval it's needs_you, and your move."""
-    return a.get("role") == "reviewer" and a.get("status") == "agents_done" and a.get("column") != "needs_you"
+def handed_on(a, me):
+    """A review your agent does that doesn't ask anything of you: one someone else asked it for (their
+    agent asks yours to review their PR), or one the agents agree on. You aren't requested, so it isn't
+    on your list, only on the Your agent card: it may never come to you (they may ask someone else for
+    the human review). When aag asks you (your approval, your decision) it's needs_you, and your move.
+    A review you asked your agent for yourself is yours while the agents work on it."""
+    return (a.get("role") == "reviewer" and a.get("column") != "needs_you"
+            and (a.get("requestedBy") != me or a.get("status") == "agents_done"))
 
 
 def _fields(a, me):
@@ -149,7 +151,7 @@ def sync(reg, feed, today, now):
                 made.setdefault(k, t)  # not one you wrote yourself
         elif t["aag"]["id"] in listed:
             a = listed.pop(t["aag"]["id"])
-            if handed_on(a):
+            if handed_on(a, me):
                 continue
             _apply(t, a, me, now)
             kept.append(t)
@@ -159,7 +161,7 @@ def sync(reg, feed, today, now):
             _apply(t, a, me, now)
             continue
         f = _fields(a, me)
-        if handed_on(a) or (f["status"] == "done" and not str(f["done_at"]).startswith(today)):
+        if handed_on(a, me) or (f["status"] == "done" and not str(f["done_at"]).startswith(today)):
             continue
         t = {"id": f"aag-{a['id']}", "kind": "deep" if a.get("phase") == "owner_review" else "quick", "priority": "P1",
              "do": today, "rolled": 0, "sessions": [], "created": now, "updated": now, "mine": []}
