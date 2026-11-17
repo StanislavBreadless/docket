@@ -65,15 +65,20 @@ class Mapping(unittest.TestCase):
         self.assertEqual(reg["tasks"], [mine])  # yours stay
         self.assertFalse(aag.sync(reg, feed(), DAY, NOW))
 
-    def test_a_review_the_agents_agree_on_waits_on_the_humans_until_aag_closes_it(self):
+    def test_a_review_the_agents_agree_on_is_on_your_list_only_when_aag_asks_for_your_approval(self):
         reviewed = dict(role="reviewer", status="agents_done")
         reg, by = synced(a("1", "waiting", "Reviewed; the merge is up to humans", **reviewed),
-                         a("2", "waiting", "Reviewed; valera asks for the human review next", **reviewed, statusAt="2026-02-20T12:00:00Z"),
+                         a("2", "waiting", "Reviewed; valera asks for the human review next", **reviewed),
                          a("3", "needs_you", "Your approval: the agents agree", **reviewed))
-        self.assertEqual(sorted(by), ["aag-1", "aag-2", "aag-3"], "reviewed long ago, still waiting: it's there")
-        self.assertEqual([by[k]["status"] for k in ("aag-1", "aag-2", "aag-3")], ["waiting", "waiting", "open"])
-        aag.sync(reg, feed(a("1", "done", "Merged", status="done", role="reviewer")), DAY, NOW)  # aag closes it
-        self.assertEqual(reg["tasks"][0]["status"], "done")
+        self.assertEqual(sorted(by), ["aag-3"], "the PR's people have the move: the card has it, not your list")
+        self.assertEqual(by["aag-3"]["status"], "open")
+        # one that was on your list goes when the agents agree, unless you put it in your order
+        reg, by = synced(a("4", "waiting", "Waiting on the author", role="reviewer"), a("5", "working", role="reviewer"))
+        reg["order"] = ["aag-5"]
+        aag.sync(reg, feed(a("4", "waiting", "Reviewed", **reviewed), a("5", "waiting", "Reviewed", **reviewed)), DAY, NOW)
+        self.assertEqual([t["id"] for t in reg["tasks"]], ["aag-5"])
+        aag.sync(reg, feed(a("5", "needs_you", "Your approval: the agents agree", **reviewed)), DAY, NOW)  # now it's yours
+        self.assertEqual(reg["tasks"][0]["status"], "open")
 
     def test_your_own_task_waits_for_nobody_and_your_review_is_deep_work(self):
         _, by = synced(a("1", "needs_you", "Your review", requestedBy="valera", phase="owner_review"))

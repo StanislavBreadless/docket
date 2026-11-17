@@ -5,9 +5,9 @@ has it from two places, and they make one list:
   any other DM, so their asks become tasks wherever aag runs.
 - aag's own feed, when it can be read: `aag status --json` every minute, on this computer (found by
   itself) or over SSH where aag runs on a server. A task whose next move is yours is open, linked to
-  its DM thread and its PR; one the agent works on, or that waits on others, is waiting (a review the
-  agents agree on waits on the humans: the author, the other reviewers, the merge, until aag closes it);
-  a finished one is handled. The side panel's "Your agent" card has the rest: what each agent is doing now,
+  its DM thread and its PR; one the agent works on, or that waits on others, is waiting; a finished one
+  is handled. A review the agents agree on that aag doesn't ask you to approve isn't yours to do: it's
+  on the Your agent card only, until aag asks for your approval (then it's open) or closes it. The side panel's "Your agent" card has the rest: what each agent is doing now,
   and where each PR stands.
 
 The two meet in the DM thread: one task per thread. While the feed can be read it has the say on a
@@ -112,6 +112,14 @@ def finished(a):
     return a.get("column") == "done"
 
 
+def handed_on(a):
+    """A review your agent finished, the agents agreeing, that aag doesn't ask you to approve: it waits
+    on the PR's own people (its author marks it ready and asks for reviews; others approve and merge).
+    Not on your list, then, only on the Your agent card: as aag has it, it's no one's ask of you yet.
+    When aag asks for your approval it's needs_you, and your move."""
+    return a.get("role") == "reviewer" and a.get("status") == "agents_done" and a.get("column") != "needs_you"
+
+
 def _fields(a, me):
     """What aag says about one of its tasks, as Docket's fields."""
     pr, column = a.get("pr") or {}, a.get("column")
@@ -140,7 +148,10 @@ def sync(reg, feed, today, now):
             for k in {thread(s["link"]) for s in t["sources"]} - {None} if "title" not in t.get("mine", []) else ():
                 made.setdefault(k, t)  # not one you wrote yourself
         elif t["aag"]["id"] in listed:
-            _apply(t, listed.pop(t["aag"]["id"]), me, now)
+            a = listed.pop(t["aag"]["id"])
+            if handed_on(a) and t["id"] not in reg.get("order", []):  # one you put in your order stays
+                continue
+            _apply(t, a, me, now)
             kept.append(t)
     for a in listed.values():
         t = made.pop(thread(a.get("dm")), None)
@@ -148,7 +159,7 @@ def sync(reg, feed, today, now):
             _apply(t, a, me, now)
             continue
         f = _fields(a, me)
-        if f["status"] == "done" and not str(f["done_at"]).startswith(today):
+        if handed_on(a) or (f["status"] == "done" and not str(f["done_at"]).startswith(today)):
             continue
         t = {"id": f"aag-{a['id']}", "kind": "deep" if a.get("phase") == "owner_review" else "quick", "priority": "P1",
              "do": today, "rolled": 0, "sessions": [], "created": now, "updated": now, "mine": []}
