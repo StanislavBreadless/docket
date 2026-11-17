@@ -72,13 +72,13 @@ class Mapping(unittest.TestCase):
                          a("3", "needs_you", "Your approval: the agents agree", **reviewed))
         self.assertEqual(sorted(by), ["aag-3"], "the PR's people have the move: the card has it, not your list")
         self.assertEqual(by["aag-3"]["status"], "open")
-        # one that was on your list goes when the agents agree, unless you put it in your order
-        reg, by = synced(a("4", "waiting", "Waiting on the author", role="reviewer"), a("5", "working", role="reviewer"))
-        reg["order"] = ["aag-5"]
-        aag.sync(reg, feed(a("4", "waiting", "Reviewed", **reviewed), a("5", "waiting", "Reviewed", **reviewed)), DAY, NOW)
-        self.assertEqual([t["id"] for t in reg["tasks"]], ["aag-5"])
-        aag.sync(reg, feed(a("5", "needs_you", "Your approval: the agents agree", **reviewed)), DAY, NOW)  # now it's yours
-        self.assertEqual(reg["tasks"][0]["status"], "open")
+        # one that was on your list, in your order too, goes when the agents agree, and comes back when it's yours
+        reg, by = synced(a("4", "waiting", "Waiting on the author", role="reviewer"))
+        reg["order"] = ["aag-4"]
+        aag.sync(reg, feed(a("4", "waiting", "Reviewed", **reviewed)), DAY, NOW)
+        self.assertEqual(reg["tasks"], [])
+        aag.sync(reg, feed(a("4", "needs_you", "Your approval: the agents agree", **reviewed)), DAY, NOW)
+        self.assertEqual([(t["id"], t["status"]) for t in reg["tasks"]], [("aag-4", "open")])
 
     def test_your_own_task_waits_for_nobody_and_your_review_is_deep_work(self):
         _, by = synced(a("1", "needs_you", "Your review", requestedBy="valera", phase="owner_review"))

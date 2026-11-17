@@ -149,7 +149,7 @@ def sync(reg, feed, today, now):
                 made.setdefault(k, t)  # not one you wrote yourself
         elif t["aag"]["id"] in listed:
             a = listed.pop(t["aag"]["id"])
-            if handed_on(a) and t["id"] not in reg.get("order", []):  # one you put in your order stays
+            if handed_on(a):
                 continue
             _apply(t, a, me, now)
             kept.append(t)
