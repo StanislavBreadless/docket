@@ -273,6 +273,7 @@ PRS = ("query($q:String!){viewer{login} search(query:$q,type:ISSUE,first:30){nod
        "url isDraft updatedAt reviewDecision mergeable author{login ... on User{name databaseId}} repository{nameWithOwner} "
        "reviewRequests(first:20){nodes{requestedReviewer{... on User{login}}}} "
        "latestReviews(first:20){nodes{author{login} state submittedAt}} "
+       "reviewThreads(last:50){nodes{isResolved comments(first:10){nodes{author{login}}}}} "
        "commits(last:1){nodes{commit{committedDate statusCheckRollup{state}}}}}}}}")
 SEARCH = {"mine": "is:pr is:open author:@me archived:false sort:updated-desc",
           "asked": "is:pr is:open user-review-requested:@me archived:false sort:updated-desc",
@@ -309,9 +310,17 @@ def _my_review(n, me):
     return next((r for r in (n.get("latestReviews") or {}).get("nodes") or [] if (r.get("author") or {}).get("login") == me), None)
 
 
+def _open_threads(n, me):
+    """How many unresolved review threads on a PR you're in."""
+    return sum(1 for t in (n.get("reviewThreads") or {}).get("nodes") or [] if not t.get("isResolved") and any(
+        (c.get("author") or {}).get("login") == me for c in (t.get("comments") or {}).get("nodes") or []))
+
+
 def _review_state(n, me):
     """Where a PR you review stands from your side: "review requested", "re-requested", "new commits"
-    (since your last review), "waiting on author" (you commented or asked for changes) or "approved"."""
+    (since your last review), "waiting on author" (you asked for changes, or a thread you're in is still
+    open), "not approved" (you only commented, every thread you're in is resolved, and you haven't
+    approved: likely the approve you forgot) or "approved"."""
     asked = any(((r.get("requestedReviewer") or {}).get("login")) == me for r in (n.get("reviewRequests") or {}).get("nodes") or [])
     last = _my_review(n, me)
     if asked:
@@ -320,7 +329,11 @@ def _review_state(n, me):
         return "review requested"
     if (_last_commit(n).get("committedDate") or "") > (last.get("submittedAt") or ""):
         return "new commits"
-    return "approved" if last.get("state") == "APPROVED" else "waiting on author"
+    if last.get("state") == "APPROVED":
+        return "approved"
+    if last.get("state") == "COMMENTED" and not _open_threads(n, me):
+        return "not approved"
+    return "waiting on author"
 
 
 def _pr(n, state):
@@ -328,6 +341,59 @@ def _pr(n, state):
             "url": n["url"] if n["url"].startswith("https://") else "", "updated": n["updatedAt"][:19],
             "author": ((n.get("author") or {}).get("login") or "")[:60], "author_name": ((n.get("author") or {}).get("name") or "")[:80],
             "author_id": (n.get("author") or {}).get("databaseId"), "draft": bool(n.get("isDraft")), "state": state}
+
+
+# A shared order for PRs: GitHub Projects named in settings "queues" (their URLs), each one list of PRs in
+# the order the team set by dragging, with a Status (Merge now, Review now, Next, Parked…). A PR in one
+# shows its place and status, and the PRs you review sort by it.
+QUEUE = ("query($login:String!,$n:Int!,$after:String){owner:%s(login:$login){projectV2(number:$n){title url "
+         "items(first:100,after:$after,orderBy:{field:POSITION,direction:ASC}){pageInfo{hasNextPage endCursor} "
+         "nodes{isArchived content{... on PullRequest{url state}} "
+         "fieldValueByName(name:\"Status\"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}")
+QUEUE_URL = re.compile(r"^https://github\.com/(orgs|users)/([^/]+)/projects/(\d+)")
+
+
+def _read_queue(gh, url):
+    """A queue's open PRs in its order: {"name", "url", "prs": [(pr url, status)]}. Up to 500 items."""
+    m = QUEUE_URL.match(url or "")
+    if not m:
+        raise RuntimeError(f"not a GitHub project: {url}")
+    kind, login, number = m.groups()
+    q, after, name, items = QUEUE % ("organization" if kind == "orgs" else "user"), None, url, []
+    for _ in range(5):
+        r = subprocess.run([gh, "api", "graphql", "-f", "query=" + q, "-f", f"login={login}", "-F", f"n={number}",
+                            *(["-f", f"after={after}"] if after else [])], env=_env(), capture_output=True, text=True, timeout=40)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout).strip()
+            raise RuntimeError("gh needs the read:project scope: gh auth refresh -s read:project" if "read:project" in err else err[-200:])
+        proj = ((json.loads(r.stdout).get("data") or {}).get("owner") or {}).get("projectV2")
+        if not proj:
+            raise RuntimeError(f"can't read {url}")
+        name, page = proj.get("title") or name, proj["items"]
+        items += [(i["content"]["url"], (i.get("fieldValueByName") or {}).get("name") or "") for i in page["nodes"]
+                  if not i.get("isArchived") and (i.get("content") or {}).get("state") == "OPEN"]
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        after = page["pageInfo"]["endCursor"]
+    return {"name": name, "url": url, "prs": items}
+
+
+def _place(prs, queues):
+    """Each PR gets its place in the first queue that has it: "queue" = {name, url, rank, of, status}."""
+    for p in prs:
+        for qu in queues:
+            at = next((i for i, (u, _) in enumerate(qu["prs"]) if u == p["url"]), None)
+            if at is not None:
+                p["queue"] = {"name": qu["name"][:80], "url": qu["url"], "rank": at + 1, "of": len(qu["prs"]),
+                              "status": qu["prs"][at][1][:40]}
+                break
+    return prs
+
+
+def _by_queue(prs):
+    """Queued PRs first, in the queue's order; the rest after them, newest activity first."""
+    prs = sorted(prs, key=lambda x: x["updated"], reverse=True)
+    return sorted(prs, key=lambda x: (x["queue"]["url"], x["queue"]["rank"]) if x.get("queue") else ("~",))
 
 
 def prs():
@@ -363,9 +429,16 @@ def _read_prs():
                 reviewing.append(_pr(n, _review_state(n, me)))
                 if reviewing[-1]["state"] == "approved":
                     ok[tasks.pr_key(n["url"])] = _my_review(n, me).get("submittedAt")
+        mine, queues, qerr = [_pr(n, _pr_state(n)) for n in found["mine"]], [], None
+        for url in store.settings().get("queues") or []:
+            try:
+                queues.append(_read_queue(gh, url))
+            except Exception as e:
+                qerr = str(e)[-200:]
         with _prs_lock:
-            _prs.update(items=[_pr(n, _pr_state(n)) for n in found["mine"]], read=True, error=None,
-                        reviewing=sorted(reviewing, key=lambda x: x["updated"], reverse=True))
+            _prs.update(items=_place(mine, queues), read=True, error=None, queue_error=qerr,
+                        queues=[{"name": q["name"], "url": q["url"], "count": len(q["prs"])} for q in queues],
+                        reviewing=_by_queue(_place(reviewing, queues)))
         approved = ok
     except Exception as e:
         print(f"page: couldn't list PRs: {e!r}", file=sys.stderr)

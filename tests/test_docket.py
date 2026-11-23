@@ -326,6 +326,34 @@ class Prs(unittest.TestCase):
         self.assertEqual(s(reviews=[("me", "APPROVED", "2026-03-02T11:00:00Z"), ("sam", "COMMENTED", "2026-03-02T12:00:00Z")]), "approved")
         self.assertEqual(s(reviews=[("me", "DISMISSED", "2026-03-02T11:00:00Z")]), "review requested")
 
+    def test_only_commented_with_your_threads_resolved_is_the_approve_you_forgot(self):
+        n = self.reviewed(reviews=[("me", "COMMENTED", "2026-03-02T11:00:00Z")])
+        thread = lambda done, *who: {"isResolved": done, "comments": {"nodes": [{"author": {"login": w}} for w in who]}}
+        self.assertEqual(app._review_state(n, "me"), "not approved")
+        n["reviewThreads"] = {"nodes": [thread(True, "me"), thread(False, "sam")]}
+        self.assertEqual(app._review_state(n, "me"), "not approved")
+        n["reviewThreads"]["nodes"].append(thread(False, "sam", "me"))
+        self.assertEqual(app._review_state(n, "me"), "waiting on author")
+
+    def test_a_shared_queue_places_prs_and_orders_the_ones_you_review(self):
+        url = lambda n: f"https://github.com/Org/repo/pull/{n}"
+        page = lambda nodes, more=False: mock.Mock(returncode=0, stdout=json.dumps({"data": {"owner": {"projectV2": {
+            "title": "merge queue", "url": "x", "items": {"pageInfo": {"hasNextPage": more, "endCursor": "c"}, "nodes": nodes}}}}}))
+        item = lambda n, st, state="OPEN", arch=False: {"isArchived": arch, "content": {"url": url(n), "state": state},
+                                                         "fieldValueByName": {"name": st} if st else None}
+        q = "https://github.com/orgs/Org/projects/4"
+        with mock.patch.object(app.subprocess, "run", side_effect=[
+                page([item(3, "Merge now"), item(9, "", "MERGED"), item(8, "Parked", arch=True)], True), page([item(1, "Review now")])]) as run:
+            got = app._read_queue("gh", q)
+        self.assertEqual(got["prs"], [(url(3), "Merge now"), (url(1), "Review now")])
+        self.assertIn("after=c", run.call_args.args[0])
+        prs = [{"url": url(n), "updated": u} for n, u in ((5, "2026-03-02T12:00"), (1, "2026-03-01T00:00"), (3, "2026-02-01T00:00"))]
+        out = app._by_queue(app._place(prs, [got]))
+        self.assertEqual([p["url"] for p in out], [url(3), url(1), url(5)])
+        self.assertEqual(out[1]["queue"], {"name": "merge queue", "url": q, "rank": 2, "of": 2, "status": "Review now"})
+        with self.assertRaises(RuntimeError):
+            app._read_queue("gh", "https://github.com/Org/repo")
+
     def test_a_review_you_approved_closes_without_a_refresh(self):
         url = "https://github.com/Org/repo/pull/7"
         asked = task(title="Look at the CI pin", review=url + "/files")

@@ -64,8 +64,11 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
   - Today's meetings, with a now line and free gaps.
   - Your **pull requests** (read with `gh`), in two tabs. **Mine** groups them as ready to merge, needs
     you (conflicts, CI failing, changes requested), waiting, and drafts. **Reviewing** groups the PRs
-    you're asked to review or have reviewed: review requested, new commits since your review, waiting
-    on the author, approved.
+    you're asked to review or have reviewed: review requested, new commits since your review,
+    **reviewed, not approved** (you only commented and every thread you're in is resolved: likely the
+    approve you forgot), waiting on the author, approved.
+  - **A shared order** for the team's PRs, if you name one ([below](#shared-order)): a PR in it says its
+    place and status (**#3 · Review now**), and Reviewing lists the queued ones first, in that order.
   - Click a card's title to fold it to just the title, and again to open it; Docket remembers which
     are folded.
   - **Your agent**, always: whether it's on, off, paused or offline, what to sign, and every task it
@@ -117,6 +120,20 @@ The folder is `$DOCKET_HOME`, or `~/.local/share/docket` by default. In it, `set
 | `reviews_days` | how far back `review:` comments on Linear count (default 30) |
 
 The page's port is `$DOCKET_PORT` (default 8766).
+
+### A shared order for PRs <a id="shared-order"></a>
+
+When a repo has more open PRs than anyone can keep in their head, keep one ranked list the whole team
+sees: a GitHub Project with the PRs as items, dragged into the order you'll review and merge them, and a
+**Status** field (Merge now, Review now, Next, Parked; any name with "now" in it is shown bold). Name it
+in settings.json:
+
+```json
+{"queues": ["https://github.com/orgs/matter-labs/projects/123"]}
+```
+
+Docket reads it with `gh` along with your PRs (every few minutes; archived items and merged or closed PRs
+are left out). `gh` needs the project scope once: `gh auth refresh -s read:project`.
 
 ### Your agent (aag)
 

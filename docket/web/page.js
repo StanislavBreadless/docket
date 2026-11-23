@@ -136,24 +136,28 @@ window.docketPage = function (el, opts = {}) {
   // Pull requests from the last two weeks, read with gh on this computer: yours by what they need, and the
   // ones you review by where they stand from your side. The tab is remembered in this browser.
   const PR = { ready: "go", conflicts: "bad", "CI failing": "bad", "changes requested": "bad", "CI running": "wait", "needs review": "wait", draft: "",
-               "review requested": "bad", "re-requested": "bad", "new commits": "bad", "waiting on author": "wait", approved: "go" };
+               "review requested": "bad", "re-requested": "bad", "new commits": "bad", "not approved": "bad", "waiting on author": "wait", approved: "go" };
   let prTab = "mine"; try { prTab = localStorage.getItem("docket-pr-tab") || "mine"; } catch {}
+  // a PR's place in the team's shared order (a GitHub Project in settings "queues"): "#3 · Review now"
+  const qPlace = (x) => x.queue ? ` · <a class="qp${/now/i.test(x.queue.status) ? " now" : ""}" href="${esc(x.queue.url)}" target="_blank" rel="noopener"
+      title="${esc(x.queue.name)}: ${x.queue.rank} of ${x.queue.of}">#${x.queue.rank}${x.queue.status ? " · " + esc(x.queue.status) : ""}</a>` : "";
   function prs(data) {
-    const p = data.prs || {}, cutoff = Date.now() - 14 * 86400e3, recent = (l) => (l || []).filter((x) => Date.parse(x.updated + "Z") >= cutoff);
+    const p = data.prs || {}, cutoff = Date.now() - 14 * 86400e3, recent = (l) => (l || []).filter((x) => x.queue || Date.parse(x.updated + "Z") >= cutoff);
     const mine = recent(p.items), rev = recent(p.reviewing), list = prTab === "reviewing" ? rev : mine;
     const all = (prTab === "reviewing" ? p.reviewing : p.items) || [], older = all.length - list.length;
     const row = (x) => `<div class="pr"><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>
-      <div class="s"><span class="st ${PR[x.state] || ""}">${esc(x.state)}</span>${x.draft && x.state !== "draft" ? " · draft" : ""}
+      <div class="s"><span class="st ${PR[x.state] || ""}">${esc(x.state === "not approved" ? "reviewed, not approved" : x.state)}</span>${qPlace(x)}${x.draft && x.state !== "draft" ? " · draft" : ""}
         · ${esc(x.repo.split("/")[1])}#${x.number}${prTab === "reviewing" && x.author ? " · " + esc(x.author) : ""} · ${ago(Date.parse(x.updated + "Z") / 1000)}</div></div>`;
     const part = (title, states) => { const l = list.filter((x) => states.includes(x.state)); return l.length ? `<div class="sub">${title}</div>` + l.map(row).join("") : ""; };
     const body = prTab === "reviewing"
-      ? part("Needs your review", ["review requested", "re-requested", "new commits"]) + part("Waiting on the author", ["waiting on author"]) + part("Approved by you", ["approved"])
+      ? part("Needs your review", ["review requested", "re-requested", "new commits", "not approved"]) + part("Waiting on the author", ["waiting on author"]) + part("Approved by you", ["approved"])
       : part("Ready to merge", ["ready"]) + part("Needs you", ["conflicts", "CI failing", "changes requested"]) + part("Waiting", ["needs review", "CI running"]) + part("Drafts", ["draft"]);
     const tab = (k, name, n) => `<button data-prtab="${k}" class="${prTab === k ? "on" : ""}">${name}${n ? ` <span class="count">${n}</span>` : ""}</button>`;
     return `<div class="seg prtabs">${tab("mine", "Mine", mine.length)}${tab("reviewing", "Reviewing", rev.filter((x) => PR[x.state] === "bad").length || rev.length)}</div>`
       + (p.error ? `<p class="err" style="font-size:13px">gh: ${esc(p.error)}</p>` : "")
+      + (p.queue_error ? `<p class="err" style="font-size:13px">Shared order: ${esc(p.queue_error)}</p>` : "")
       + (body || `<p class="empty">${p.loading ? "Reading your PRs…" : prTab === "reviewing" ? "Nothing to review from the last two weeks." : "No open PRs in the last two weeks."}</p>`)
-      + `<p class="meta" style="margin:8px 0 0">${older ? `+ ${older} older · ` : ""}<a href="https://github.com/pulls${prTab === "reviewing" ? "/review-requested" : ""}" target="_blank" rel="noopener">All on GitHub ↗</a></p>`;
+      + `<p class="meta" style="margin:8px 0 0">${older ? `+ ${older} older · ` : ""}${(p.queues || []).map((q) => `<a href="${esc(q.url)}" target="_blank" rel="noopener">${esc(q.name)} ↗</a> · `).join("")}<a href="https://github.com/pulls${prTab === "reviewing" ? "/review-requested" : ""}" target="_blank" rel="noopener">All on GitHub ↗</a></p>`;
   }
   // a card on the side; its title folds it to just the title and opens it again, remembered in this browser
   const closedCards = () => { try { return JSON.parse(localStorage.getItem("docket-closed") || "[]"); } catch { return []; } };
