@@ -36,7 +36,8 @@
 //                         next, and above it, past a divider, the tasks not in your order yet. A row
 //                         opens in place (click, space); drag rows, Shift+J/K or To top / To end to
 //                         place them, which calls order(task ids in your order, task ids shown): data
-//   Buttons with data-act="action" data-value="v" in more(…, "now") call act(task, action, v).
+//   Buttons with data-act="action" data-value="v" in more(…, "now") call act(task, action, v). Data with a
+//   notice (from act or sideClick) shows it.
 //   })  →  {reload(), render(), select(task id), data}
 (() => {
   const PRI = ["P0", "P1", "P2"];
@@ -225,6 +226,7 @@
       const before = { ...t };
       try { data = await src.act(t, action, value); } catch (e) { return toast(e.message || "That didn't work."); }
       if (label) { lastUndo = before; toast(`${label}: ${t.title}`, true); }
+      else if (data && data.notice) toast(data.notice);
       if (sel === t.id && action !== "star" && !keep) sel = null;
       render();
     }
@@ -356,7 +358,7 @@
     part("side").addEventListener("click", async (e) => {
       if (!src.sideClick) return;
       const out = await src.sideClick(e, data);
-      if (out) { data = out; render(); }
+      if (out) { data = out; render(); if (out.notice) toast(out.notice); }
     });
     if (src.add) part("add").addEventListener("submit", async (e) => {
       e.preventDefault();

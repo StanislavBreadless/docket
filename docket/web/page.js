@@ -212,6 +212,13 @@ window.docketPage = function (el, opts = {}) {
       title="One place ${dir} in ${esc(q.queue)}, on GitHub: everyone's Docket follows">${dir === "up" ? "↑" : "↓"}</button>`).join("");
     return `<a class="teamchip${q.parked ? " parked" : ""}" href="${esc(q.queueUrl)}" target="_blank" rel="noopener" title="${esc(q.queue)}: ${q.rank} of ${q.of}">team #${q.rank}${q.status ? " · " + esc(q.status) : ""}</a>${btns}`;
   }
+  // what a move did, said on the page (docket.js shows data.notice): the PR's new place, or that it's at the end already
+  function moved(was, out, dir) {
+    const now = was && teamOf(out, { sources: [{ link: was.url }], status: "open" }), n = was && was.url.split("/").pop();
+    if (now) out.notice = now.rank === was.rank ? `#${n} is ${dir === "up" ? "first" : "last"} in ${now.queue} already.`
+      : `#${n} is team #${now.rank} now (was #${was.rank}), on GitHub: everyone's Docket follows.`;
+    return out;
+  }
   const withTeam = (more) => (t, d, where) => [teamChip(d, t, where), more(t, d, where)].filter(Boolean).join(" · ");
   // a card on the side; its title folds it to just the title and opens it again, remembered in this browser
   const closedCards = () => { try { return JSON.parse(localStorage.getItem("docket-closed") || "[]"); } catch { return []; } };
@@ -421,7 +428,8 @@ window.docketPage = function (el, opts = {}) {
         if (blk && !e.target.closest("a")) { show(blk.dataset.view); views[blk.dataset.view].select(blk.dataset.task); return; }
         const mv = e.target.closest("button[data-qmove]");
         if (mv) {
-          try { qError = ""; return await both(v, post("/queue/move", { pr: mv.dataset.pr, dir: mv.dataset.qmove })); }
+          const was = teamOf(d, { sources: [{ link: mv.dataset.pr }], status: "open" });
+          try { qError = ""; return moved(was, await both(v, post("/queue/move", { pr: mv.dataset.pr, dir: mv.dataset.qmove })), mv.dataset.qmove); }
           catch (err) { qError = err.message; return d; }
         }
         const b = e.target.closest("button[data-prtab]"); if (!b) return;
@@ -447,7 +455,7 @@ window.docketPage = function (el, opts = {}) {
     if (action === "queue_up" || action === "queue_down") {
       const q = teamOf(views.work.data || views.triage.data, t);
       if (!q) throw new Error("It isn't in the shared order any more.");
-      return post("/queue/move", { pr: q.url, dir: action.slice(6) });
+      return moved(q, await post("/queue/move", { pr: q.url, dir: action.slice(6) }), action.slice(6));
     }
     if (action !== "restore") return post("/task", { id: t.id, action, value });
     // undo: back to the view, or the status and day, it had before

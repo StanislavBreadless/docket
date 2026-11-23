@@ -389,7 +389,7 @@ class Prs(unittest.TestCase):
         self.assertEqual(app._after(qu, url(1), 1), "I3")
         self.assertIs(app._after(qu, url(1), -1), False)
         self.assertIs(app._after(qu, url(4), 1), False)
-        moved = {**qu, "prs": [(url(1), "Review now"), (url(4), "Next"), (url(3), "")]}
+        moved = {**qu, "prs": [(url(1), "Review now"), (url(4), "Next"), (url(3), "")], "order": ["I1", "I2", "I4", "I3"]}
         with mock.patch.object(app, "_queue_data", [qu]), mock.patch.object(app, "_which", return_value="gh"), \
                 mock.patch.object(app, "_read_queue", return_value=moved), \
                 mock.patch.dict(app._prs, {"items": [], "reviewing": [{"url": url(4), "updated": "x"}]}), \
@@ -404,6 +404,11 @@ class Prs(unittest.TestCase):
             run.assert_not_called()
             with self.assertRaises(ValueError):
                 app.move_queued({"pr": url(9), "dir": "up"})
+            # GitHub took the move but the read after it failed: shown as made here
+            with mock.patch.object(app, "_read_queue", side_effect=RuntimeError("gh: HTTP 502")):
+                app.move_queued({"pr": url(3), "dir": "up"})
+            self.assertEqual([x["url"] for x in app._prs["queues"][0]["prs"]], [url(1), url(3), url(4)])
+            self.assertEqual(app._queue_data[0]["order"], ["I1", "I2", "I3", "I4"])  # the next move is worked out from it
 
     def test_a_review_you_approved_closes_without_a_refresh(self):
         url = "https://github.com/Org/repo/pull/7"

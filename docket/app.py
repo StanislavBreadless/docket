@@ -424,7 +424,15 @@ def move_queued(body):
             err = (r.stderr or r.stdout).strip()
             raise RuntimeError("gh needs the project scope to move PRs: gh auth refresh -s project"
                                if "scope" in err.lower() else err[-200:])
-    fresh = _read_queue(gh, qu["url"])
+    try:
+        fresh = _read_queue(gh, qu["url"])
+    except Exception as e:  # GitHub has the move; a failed read shows it as made here
+        print(f"page: reading the shared order after a move: {e!r}", file=sys.stderr)
+        prs, at, order = list(qu["prs"]), [u for u, _ in qu["prs"]].index(pr), [i for i in qu["order"] if i != qu["ids"][pr]]
+        if after is not False:
+            prs.insert(at + step, prs.pop(at))
+            order.insert(order.index(after) + 1 if after in order else 0, qu["ids"][pr])
+        fresh = {**qu, "prs": prs, "order": order if after is not False else qu["order"]}
     with _prs_lock:
         _queue_data[:] = [fresh if q["url"] == qu["url"] else q for q in _queue_data]
         _publish_queues()
