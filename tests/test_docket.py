@@ -44,6 +44,30 @@ class Rules(unittest.TestCase):
         tasks.merge(reg, {"new": [{"title": "merge the release-notes PR"}]}, DAY, NOW)
         self.assertEqual(len(reg["tasks"]), 1)
 
+    def test_a_dropped_report_covers_later_emails_about_it(self):
+        mail = lambda n: [{"label": "email from Immunefi", "link": f"https://mail.google.com/mail/#all/thread-f:{n}"}]
+        reg = {"tasks": [task(title="Read new message on Immunefi report #12345 (High: example bug)", sources=mail(1)),
+                         task(title="Triage new Immunefi report #12399 (Medium: another example)", sources=mail(2))]}
+        reg["tasks"][0].update(status="dropped", done_at=NOW)
+        reg["tasks"][1].update(status="done", done_at=NOW)
+        tasks.merge(reg, {"new": [
+            {"title": "Read another new message on Immunefi report 12345", "sources": mail(3)},
+            {"title": "Decide the verdict on the example bug report",
+             "sources": [{"label": "Immunefi", "link": "https://bugs.immunefi.com/dashboard/submission/12345"}]},
+            {"title": "Read new message on Immunefi report #12399", "sources": mail(4)},  # done, not dropped: new work
+            {"title": "Triage new Immunefi report #12346", "sources": mail(5)},
+        ]}, DAY, NOW)
+        self.assertEqual([t["title"] for t in reg["tasks"][2:]],
+                         ["Read new message on Immunefi report #12399", "Triage new Immunefi report #12346"])
+        # kept 60 days, so the report's later emails stay off; a dropped task about nothing in particular goes at 14
+        reg["tasks"].append(task(title="Reply to Alex"))
+        reg["tasks"][-1].update(status="dropped", done_at=NOW)
+        tasks.roll(reg, "2026-04-01")
+        self.assertEqual({t["title"] for t in reg["tasks"] if t["status"] in tasks.CLOSED},
+                         {"Read new message on Immunefi report #12345 (High: example bug)"})
+        tasks.roll(reg, "2026-05-02")
+        self.assertEqual([t for t in reg["tasks"] if t["status"] in tasks.CLOSED], [])
+
     def test_an_overdue_task_rolls_to_today_and_counts(self):
         reg = {"tasks": [task()]}
         reg["tasks"][0]["do"] = "2026-03-01"

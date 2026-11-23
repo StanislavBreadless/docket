@@ -22,7 +22,8 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
     merged or closed, checked with `gh` every few minutes. Open it again and it stays open.
   - Each refresh also rechecks the open tasks' own links: a Slack question that was answered (by you or
     someone else), a closed issue, a merged PR, each closes its task with the link as evidence.
-  - A task you dropped or finished doesn't come back.
+  - A task you dropped or finished doesn't come back. Dropping one about an Immunefi report drops the report: a later
+    email about it (a new message, a verdict) isn't a new task, for 60 days.
   - An overdue task rolls to today and shows how often it slipped.
 - **Reply to Claude** on a task (`c`): "ask Sam for a review in the team thread". It finds the thread,
   links it, rewrites the next step and answers under your note, usually in about a minute. If the note

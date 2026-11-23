@@ -98,7 +98,8 @@ What counts:
   review requested from them, a decision they owe, a deadline. Not FYI. Not what others have to do,
   unless {who} is blocked on it: then it's "waiting".
 - Don't add what's on the list already, or what's closed above; update an open task instead, and only
-  when something changed. A dropped task means it isn't {who}'s to do. Leave out updates
+  when something changed. A dropped task means it isn't {who}'s to do, and neither is anything later about the
+  same thing (a new email or message on the same report, PR or issue). Leave out updates
   that change nothing.
 - "done" needs evidence: a reply sent, a question answered by someone else, a PR approved, merged or
   closed, a decision posted. A draft isn't sent, an approval isn't signed, a calendar block isn't done,
@@ -250,7 +251,9 @@ def refresh():
     except Exception as e:
         print(f"refresh: couldn't list sessions: {e!r}", file=sys.stderr)
         titles = []
-    closed = "\n".join(f"{t['status']} · {t['title']}" for t in reg["tasks"] if t["status"] in tasks.CLOSED) or "(none)"
+    recent = (dt.date.fromisoformat(today) - dt.timedelta(days=tasks.KEEP_CLOSED_DAYS)).isoformat()
+    closed = "\n".join(f"{t['status']} · {t['title']}" for t in reg["tasks"]
+                        if t["status"] in tasks.CLOSED and (t.get("done_at") or today) >= recent) or "(none)"
     rules = "\n\n".join(x for x in (RULES, *(f() for f in RULES_FROM)) if x)
     out = _ask(REFRESH.format(who=_who(), now=started.strftime("%A %Y-%m-%d %H:%M"),
                               since=since, tasks=lines, closed=closed, sessions="\n".join(titles) or "(none)")

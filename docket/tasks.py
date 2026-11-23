@@ -31,6 +31,8 @@ CLOSED = ("done", "dropped")
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MOMENT = re.compile(r"^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$")
 KEEP_CLOSED_DAYS = 14
+# a dropped task that names a report (things()) is kept longer: later emails about the report stay off the list
+KEEP_DROPPED_DAYS = 60
 TEXT = {"title": 160, "next": 240, "why": 240, "who": 80}
 KEEP_NOTES = 12
 ESTIMATES = {"15", "30", "60", "120", "240"}
@@ -135,11 +137,26 @@ def _titles(items):
     return [t for t in (_text(x, 120) for x in (items if isinstance(items, list) else [])[:5]) if t]
 
 
+# the one thing a task is about, whatever email or message brought it: an Immunefi report (each new message
+# on it comes as an email of its own)
+THING = [(re.compile(r"\bimmunefi\b[^\n]*?\breport\s*#?\s*(\d{4,7})", re.I), "immunefi"),
+         (re.compile(r"bugs\.immunefi\.com/\S*?/(?:submission|report)s?/(\d{4,7})"), "immunefi")]
+
+
+def things(t):
+    """What a task is about, as keys ("immunefi:12345"), from its title and its links."""
+    text = " ".join([t.get("title") or "", *(s.get("link") or "" for s in t.get("sources") or [])])
+    return {f"{kind}:{m}" for rx, kind in THING for m in rx.findall(text)}
+
+
 def _duplicate(tasks, n):
-    """Already on the list, open or closed: a task you dropped or finished doesn't come back as new."""
+    """Already on the list, open or closed: a task you dropped or finished doesn't come back as new. A
+    dropped one covers the thing it's about: a later email about the same report isn't a new task."""
     title = n["title"].casefold()
     links = {_key(s["link"]) for s in n["sources"] if s["link"]}
-    return any(t["title"].casefold() == title or links & {_key(s["link"]) for s in t["sources"] if s["link"]} for t in tasks)
+    about = things(n)
+    return any(t["title"].casefold() == title or links & {_key(s["link"]) for s in t["sources"] if s["link"]}
+               or (t["status"] == "dropped" and about & things(t)) for t in tasks)
 
 
 def meetings(items):
@@ -267,7 +284,9 @@ def roll(reg, today):
             if t["status"] == "open":
                 t["rolled"] = t.get("rolled", 0) + 1
     cutoff = (dt.date.fromisoformat(today) - dt.timedelta(days=KEEP_CLOSED_DAYS)).isoformat()
-    reg["tasks"] = [t for t in reg["tasks"] if t["status"] in OPEN or (t.get("done_at") or today) >= cutoff]
+    longer = (dt.date.fromisoformat(today) - dt.timedelta(days=KEEP_DROPPED_DAYS)).isoformat()
+    reg["tasks"] = [t for t in reg["tasks"] if t["status"] in OPEN or (t.get("done_at") or today) >= cutoff
+                    or (t["status"] == "dropped" and things(t) and (t.get("done_at") or today) >= longer)]
     reg["rolled_on"] = today
     return True
 
