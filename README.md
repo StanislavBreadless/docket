@@ -117,7 +117,7 @@ The folder is `$DOCKET_HOME`, or `~/.local/share/docket` by default. In it, `set
 | `every_min` | minutes between refreshes (default 15; each is a Claude run, so fewer use less of your plan) |
 | `model` | the Claude model for refreshes and replies (default `sonnet`) |
 | `agent_paths` | folders where your background agents run: their sessions are only counted, not listed |
-| `aag` | your agent's feed ([below](#your-agent-aag)): unset for the aag on this computer, `"ssh HOST"` where aag runs on a server, or `"off"` |
+| `aag` | your agent's feed ([below](#your-agent-aag)): unset for the aag on this computer, `"ssh HOST"` where aag runs on a server, `"vm"` where it runs in auto-agents' VM on this Mac, or `"off"` |
 | `linear_key` | a Linear personal API key for the Work tab ([below](#work-linear)); or `$LINEAR_API_KEY` |
 | `linear_team` | the team a new issue from **create ↗** goes to (a key like `EVM`); else your first team as Linear says |
 | `reviews_days` | how far back `review:` comments on Linear count (default 30) |
@@ -155,7 +155,9 @@ from two places that make one list:
 - **aag's own feed, when it can be read.** Every minute Docket runs `aag status --json`: the aag on this
   computer, found by itself, or `"ssh HOST"` where aag runs on a server. Over SSH it never asks for a
   password (BatchMode), and nothing has to listen on the server. Use `"ssh HOST /path/to/aag"` when
-  `aag` isn't on the PATH an SSH command gets there, and `"off"` for no feed.
+  `aag` isn't on the PATH an SSH command gets there, and `"off"` for no feed. When aag runs in
+  auto-agents' VM on this Mac (Lima, `vm/aag-vm`), use `"vm"`: Docket runs `aag-vm aag status --json`,
+  with the script on the PATH or in `~/programming/auto-agents/vm` (or `"vm /path/to/aag-vm"`).
 
 How the feed's tasks show:
 

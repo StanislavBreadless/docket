@@ -21,10 +21,14 @@ stopped aag goes on listing its task as it was, and the task still closes.
                     "aag": "local"       the same, and say so when there's none
                     "aag": "ssh HOST"    the one on HOST (BatchMode, so it never asks for a password)
                     "aag": "ssh HOST CMD"  runs CMD status --json there, when aag isn't on SSH's PATH
+                    "aag": "vm"          the one in auto-agents' VM on this Mac (Lima), through its `aag-vm`
+                                         script: on PATH, or in ~/programming/auto-agents/vm
+                    "aag": "vm PATH"     the same, with the aag-vm script at PATH
                     "aag": "off"         no feed, and the refresh reads the agent's DMs as any others
 """
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
@@ -34,6 +38,7 @@ import time
 from . import app, store, tasks
 
 EVERY = 60
+VM_SCRIPT = "~/programming/auto-agents/vm/aag-vm"  # auto-agents' VM on this Mac: `aag-vm aag …` runs aag inside
 TIMEOUT = 30
 STATUS = ("status", "done_at", "closed_by", "evidence")  # what your done or drop sets
 THREAD = re.compile(r"/archives/([A-Z0-9]+)/p(\d{10})(\d{6})")
@@ -57,9 +62,14 @@ def command(setting):
     if len(words) >= 2 and words[0] == "ssh":
         return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", words[1], *(words[2:] or ["aag"]),
                 "status", "--json"]
+    if words and words[0] == "vm":
+        script = os.path.expanduser(words[1]) if len(words) > 1 else (app._which("aag-vm") or os.path.expanduser(VM_SCRIPT))
+        if not os.access(script, os.X_OK):
+            raise RuntimeError(f"no aag-vm script at {script}: give its path (\"vm PATH\")")
+        return [script, "aag", "status", "--json"]
     if words == ["off"]:
         return None
-    raise RuntimeError(f'"aag" is "local", "ssh HOST" or "off", not {setting!r}')
+    raise RuntimeError(f'"aag" is "local", "ssh HOST", "vm" or "off", not {setting!r}')
 
 
 def read(cmd):

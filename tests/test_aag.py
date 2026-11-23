@@ -236,6 +236,18 @@ class Reading(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             aag.command("vps")
 
+    def test_in_auto_agents_vm_through_its_script(self):
+        script = os.path.join(tempfile.mkdtemp(), "aag-vm")
+        with open(script, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(script, 0o755)
+        self.assertEqual(aag.command(f"vm {script}"), [script, "aag", "status", "--json"])
+        with mock.patch.object(app, "_which", return_value=script):
+            self.assertEqual(aag.command("vm")[0], script)
+        with mock.patch.object(app, "_which", return_value=None), mock.patch.object(aag, "VM_SCRIPT", "/nowhere/aag-vm"):
+            with self.assertRaises(RuntimeError):
+                aag.command("vm")
+
     def test_an_older_aag_or_a_failed_run_is_an_error(self):
         for out in (subprocess.CompletedProcess([], 0, "UP (pid 1). Turn off: aag stop.\n", ""),
                     subprocess.CompletedProcess([], 255, "", "ssh: connect to host vps: Connection refused")):
