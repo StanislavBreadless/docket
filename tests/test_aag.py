@@ -131,6 +131,35 @@ class Reconcile(unittest.TestCase):
             tasks.merge(reg, {"updates": [{"id": reg["tasks"][0]["id"], **u}]}, DAY, NOW)
         return reg["tasks"][0]
 
+    def test_a_merged_pr_closes_its_agents_task_even_while_aag_still_lists_it(self):
+        reg, by = synced(a("1", "needs_you", "Answer: see the DM thread"))
+        self.assertEqual(tasks.pr_of(by["aag-1"]), "o/r#1")  # aag's PR, not its Slack threads
+        self.assertTrue(tasks.settled(reg, {"o/r#1": {"merged": True, "at": AT}}, NOW))
+        t = by["aag-1"]
+        self.assertEqual((t["status"], t["closed_by"]), ("done", "gh"))
+        self.assertIn("o/r#1 was merged", t["evidence"])
+        aag.sync(reg, feed(a("1", "needs_you", "Answer: see the DM thread")), DAY, NOW)  # a stopped aag says the same
+        self.assertEqual(reg["tasks"][0]["status"], "done")
+        aag.sync(reg, feed(a("1", "done", "Merged")), DAY, NOW)  # aag's own done agrees
+        self.assertEqual((reg["tasks"][0]["status"], reg["tasks"][0]["closed_by"]), ("done", "aag"))
+
+    def test_a_new_move_from_aag_has_the_say_again_and_the_same_pr_doesnt_close_it_twice(self):
+        reg, by = synced(a("1", "needs_you"))
+        ended = {"o/r#1": {"merged": False, "at": AT}}
+        tasks.settled(reg, ended, NOW)
+        aag.sync(reg, feed(a("1", "needs_you", "Reopen the PR?")), DAY, NOW)
+        self.assertEqual(reg["tasks"][0]["status"], "open")
+        self.assertFalse(tasks.settled(reg, ended, NOW))
+        self.assertEqual(reg["tasks"][0]["status"], "open")
+
+    def test_close_ended_asks_gh_about_the_agents_pr(self):
+        reg, _ = synced(a("1", "needs_you"))
+        tasks.save(reg)
+        with mock.patch.object(app, "_ended", return_value={"o/r#1": {"merged": True, "at": AT}}) as ended:
+            app._close_ended("gh")
+        self.assertEqual(ended.call_args.args[1], {"o/r#1"})
+        self.assertEqual(tasks.load()["tasks"][0]["status"], "done")
+
     def test_while_the_feed_is_read_the_refresh_adds_what_the_thread_says_but_not_its_state(self):
         reg, _ = synced(a("1", "needs_you"))
         t = self.update(reg, title="Reply go", status="done", evidence="said go", why="Kalman wants the v36 frame gone first",

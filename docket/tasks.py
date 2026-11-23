@@ -237,9 +237,13 @@ def reviewed(reg, approved, now):
 
 
 def pr_of(t):
-    """The one PR a task is about, as pr_key gives it: its "review" link; or the one PR it links, when
-    all its links go there or it's titled Review…/Approve…; else None."""
+    """The one PR a task is about, as pr_key gives it: its "review" link; for your agent's task, the PR aag
+    links (its other links are Slack threads); or the one PR it links, when all its links go there or it's
+    titled Review…/Approve…; else None."""
     key = pr_key(t.get("review"))
+    agents = {pr_key(s.get("link")) for s in (t.get("aag") or {}).get("sources") or []} - {None}
+    if not key and len(agents) == 1:
+        return agents.pop()
     keys = {pr_key(s["link"]) for s in t.get("sources") or [] if s.get("link")}
     prs = keys - {None}
     if key or len(prs) != 1:
@@ -250,16 +254,19 @@ def pr_of(t):
 def settled(reg, ended, now):
     """Closes the open tasks about a PR (pr_of) that's been merged or closed: `ended` is {pr_key:
     {"merged": bool, "at": when}}. Even one whose status you set, as there's nothing left to do or
-    wait for; but once only, so a task you open again stays open. Not your agent's or Linear's (aag and
-    linear.py have the say on those). Returns whether anything changed."""
+    wait for; but once only, so a task you open again stays open. Your agent's too, as your done closes one
+    (aag.py): it stays done while aag says what it said before (a stopped aag does), and a new move from aag
+    has the say again. Not Linear's (linear.py has the say on those). Returns whether anything changed."""
     changed = False
     for t in reg["tasks"]:
         key = pr_of(t)
-        if t["status"] not in OPEN or t.get("aag") or t.get("linear") or key not in ended or t.get("ended") == key:
+        if t["status"] not in OPEN or t.get("linear") or key not in ended or t.get("ended") == key:
             continue
         e = ended[key]
         t.update(status="done", done_at=now, closed_by="gh", updated=now, ended=key,
                  evidence=f"{key} was {'merged' if e.get('merged') else 'closed without merging'}{_at(e.get('at'), now)}")
+        if t.get("aag"):
+            t["mine"] = sorted({*(t.get("mine") or []), "status"})
         changed = True
     return changed
 

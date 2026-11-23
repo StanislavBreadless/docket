@@ -14,7 +14,8 @@ The two meet in the DM thread: one task per thread. While the feed can be read i
 task's state (status, title, next step, who's waiting), the refresh adds what the thread says (why) and
 its links, and a task leaves the list when aag stops listing it. While it can't, the refresh keeps
 them from the threads. Your snooze, priority and kind on one stay yours; a done or drop stays until its
-next move changes.
+next move changes. So does the done Docket gives one whose PR was merged or closed (tasks.settled): a
+stopped aag goes on listing its task as it was, and the task still closes.
 
     settings.json   "aag" unset          the aag on this computer, if there is one
                     "aag": "local"       the same, and say so when there's none

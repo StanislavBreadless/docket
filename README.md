@@ -18,8 +18,9 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
   - A task is done only with evidence: a draft isn't sent, silence isn't done.
   - A review asked of you is done once `gh` shows you approved the PR, within a few minutes,
     without waiting for the next refresh.
-  - A task about one PR (a review, or a task whose links all go to that PR) is done once the PR is
-    merged or closed, checked with `gh` every few minutes. Open it again and it stays open.
+  - A task about one PR (a review, a task whose links all go to that PR, or your agent's task for its PR)
+    is done once the PR is merged or closed, checked with `gh` every few minutes, even while your agent
+    is off. Open it again and it stays open.
   - Each refresh also rechecks the open tasks' own links: a Slack question that was answered (by you or
     someone else), a closed issue, a merged PR, each closes its task with the link as evidence.
   - A task you dropped or finished doesn't come back. Dropping one about an Immunefi report drops the report: a later
@@ -174,7 +175,8 @@ The two meet in the DM thread: one task per thread. While the feed can be read, 
 task's status, title, next step and who's waiting. The refresh adds what the thread says (the why) and
 its links, and doesn't add tasks for the PRs aag tracks. While the feed can't be read, the refresh keeps
 these tasks from the threads, and the feed takes them back when it returns. Your snooze, priority and
-kind on one stay yours. Your done or drop stays until its next move changes. With the local aag, its
+kind on one stay yours. Your done or drop stays until its next move changes, and so does the done a
+merged or closed PR gives it. With the local aag, its
 workdir joins `agent_paths`, so its agents' sessions are only counted.
 
 ### Work (Linear)

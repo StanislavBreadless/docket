@@ -561,7 +561,7 @@ def _close_ended(gh):
     your PRs, without waiting for the next refresh."""
     try:
         keys = {tasks.pr_of(t) for t in tasks.load()["tasks"]
-                if t["status"] in tasks.OPEN and not t.get("aag") and not t.get("linear")} - {None}
+                if t["status"] in tasks.OPEN and not t.get("linear")} - {None}
         ended = _ended(gh, keys) if keys else {}
         if ended:
             with tasks.LOCK:
