@@ -69,7 +69,8 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
     **reviewed, not approved** (you only commented and every thread you're in is resolved: likely the
     approve you forgot), waiting on the author, approved.
   - **A shared order** for the team's PRs, if you name one ([below](#shared-order)): a PR in it says its
-    place and status (**#3 · Review now**), and Reviewing lists the queued ones first, in that order.
+    place and status (**#3 · Review now**), Reviewing lists the queued ones first, in that order, and
+    **↑ ↓** move one in it for the whole team.
   - Click a card's title to fold it to just the title, and again to open it; Docket remembers which
     are folded.
   - **Your agent**, always: whether it's on, off, paused or offline, what to sign, and every task it
@@ -134,7 +135,14 @@ in settings.json:
 ```
 
 Docket reads it with `gh` along with your PRs (every few minutes; archived items and merged or closed PRs
-are left out). `gh` needs the project scope once: `gh auth refresh -s read:project`.
+are left out). `gh` needs the project scope once: `gh auth refresh -s project` (`read:project` to only read it).
+
+Your tasks about a PR in it (a review, your agent's PR, a Linear issue that links it) are **team work**: purple,
+with their place (**team #3 · Review now**), and in Work whether or not you placed them. Among themselves they
+keep the team's order; your other tasks go anywhere between them. A drag that would put one past another is
+shown as the team has it. **↑ ↓** on one (in Work, or on the PR in Reviewing) moves it a place in the Project on
+GitHub, for everyone: each Docket has it at its next read. A PR whose Status says Parked keeps its place label
+but isn't team work.
 
 ### Your agent (aag)
 

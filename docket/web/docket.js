@@ -18,6 +18,7 @@
 //     can(task, action): bool         optional: a button this task doesn't get
 //     listed(task, data): bool        optional: a task that stays in the lists while it waits or is put off
 //                         (greyed there, not folded away): something still to decide on
+//     mark(task, data): class         optional: a class on the task's row (a page's own marking)
 //     busy(task, data): bool          optional: someone else is on it now (your agent): greyed like a
 //                         waiting one, and not marked next
 //     places(task, data, action): [{id, title, blocked}] or null   optional: the button opens a list
@@ -190,7 +191,7 @@
           : opts.queue && src.minutes ? `<button data-row="done" title="Done" aria-label="Done">✓</button>` + REMIND.map(([m, l, w]) => `<button data-row="m${m}" title="Remind me in ${w}">${l}</button>`).join("")
           : `<button data-row="done" title="Done" aria-label="Done">✓</button><button data-row="snooze1" title="Tomorrow" aria-label="Snooze to tomorrow">→</button>`;
         const cls = (t.id === sel ? " sel" : "") + (opts.closed ? " closed" : "") + ((opts.queue || (src.listed && !opts.closed)) && (t.status === "waiting" || !due(t) || (src.busy && src.busy(t, data))) ? " blocked" : "") + (opts.unsorted?.has(t.id) ? " tosort" : "")
-          + (t === next ? " next" : "") + (opts.queue && t.id === opened ? " opened" : "");
+          + (t === next ? " next" : "") + (opts.queue && t.id === opened ? " opened" : "") + (src.mark && src.mark(t, data) ? " " + src.mark(t, data) : "");
         return `<div class="row${cls}" data-id="${esc(t.id)}">${opts.queue ? `<span class="grip" title="Drag to reorder (or Shift+J / Shift+K)">⠿</span>` : ""}${pri(t)}
           <div class="body"><div class="t">${t === next ? `<span class="nextmark">next</span>` : ""}${esc(t.title)}</div>${subline ? `<div class="s">${subline}</div>` : ""}</div>
           <div class="quick">${quick}</div></div>`;

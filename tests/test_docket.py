@@ -378,6 +378,33 @@ class Prs(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             app._read_queue("gh", "https://github.com/Org/repo")
 
+    def test_moving_a_queued_pr_moves_it_on_github_among_the_open_ones(self):
+        url = lambda n: f"https://github.com/Org/repo/pull/{n}"
+        q = "https://github.com/orgs/Org/projects/4"
+        # items in GitHub's order: I1 (#1), I2 (#2 merged: not shown), I3 (#3), I4 (#4)
+        qu = {"name": "merge queue", "url": q, "id": "P", "prs": [(url(1), "Review now"), (url(3), ""), (url(4), "Next")],
+              "ids": {url(1): "I1", url(3): "I3", url(4): "I4"}, "order": ["I1", "I2", "I3", "I4"]}
+        self.assertEqual(app._after(qu, url(4), -1), "I2")  # above #3: after what's before #3
+        self.assertIsNone(app._after(qu, url(3), -1))  # above #1: first
+        self.assertEqual(app._after(qu, url(1), 1), "I3")
+        self.assertIs(app._after(qu, url(1), -1), False)
+        self.assertIs(app._after(qu, url(4), 1), False)
+        moved = {**qu, "prs": [(url(1), "Review now"), (url(4), "Next"), (url(3), "")]}
+        with mock.patch.object(app, "_queue_data", [qu]), mock.patch.object(app, "_which", return_value="gh"), \
+                mock.patch.object(app, "_read_queue", return_value=moved), \
+                mock.patch.dict(app._prs, {"items": [], "reviewing": [{"url": url(4), "updated": "x"}]}), \
+                mock.patch.object(app.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="{}")) as run:
+            app.move_queued({"pr": url(4), "dir": "up"})
+            self.assertIn("a=I2", run.call_args.args[0])
+            self.assertIn("i=I4", run.call_args.args[0])
+            self.assertEqual(app._prs["reviewing"][0]["queue"]["rank"], 2)
+            self.assertEqual([x["url"] for x in app._prs["queues"][0]["prs"]], [url(1), url(4), url(3)])
+            run.reset_mock()
+            app.move_queued({"pr": url(1), "dir": "up"})  # at the top already: nothing to tell GitHub
+            run.assert_not_called()
+            with self.assertRaises(ValueError):
+                app.move_queued({"pr": url(9), "dir": "up"})
+
     def test_a_review_you_approved_closes_without_a_refresh(self):
         url = "https://github.com/Org/repo/pull/7"
         asked = task(title="Look at the CI pin", review=url + "/files")

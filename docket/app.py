@@ -142,7 +142,7 @@ RULES = ""
 RULES_FROM = []
 AFTER_REFRESH = []
 STATE = dict  # more for the page's state: a function returning a dict
-POSTS = {}  # more POST routes: {"/path": function(body)}; the page gets the state back
+POSTS = {}  # more POST routes: {"/path": function(body)}; the page gets the state back (set below: /queue/move)
 
 
 def _env():
@@ -284,6 +284,7 @@ SEARCH = {"mine": "is:pr is:open author:@me archived:false sort:updated-desc",
 PRS_EVERY = 180
 _prs = {"at": 0, "items": [], "reviewing": [], "error": None}
 _prs_lock = threading.Lock()
+_queue_data = []  # the shared orders as last read (_read_queue), for moving a PR in one
 
 
 def _last_commit(n):
@@ -349,20 +350,23 @@ def _pr(n, state):
 # A shared order for PRs: GitHub Projects named in settings "queues" (their URLs), each one list of PRs in
 # the order the team set by dragging, with a Status (Merge now, Review now, Next, Parked…). A PR in one
 # shows its place and status, and the PRs you review sort by it.
-QUEUE = ("query($login:String!,$n:Int!,$after:String){owner:%s(login:$login){projectV2(number:$n){title url "
+QUEUE = ("query($login:String!,$n:Int!,$after:String){owner:%s(login:$login){projectV2(number:$n){id title url "
          "items(first:100,after:$after,orderBy:{field:POSITION,direction:ASC}){pageInfo{hasNextPage endCursor} "
-         "nodes{isArchived content{... on PullRequest{url state}} "
+         "nodes{id isArchived content{... on PullRequest{url state}} "
          "fieldValueByName(name:\"Status\"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}")
 QUEUE_URL = re.compile(r"^https://github\.com/(orgs|users)/([^/]+)/projects/(\d+)")
 
 
 def _read_queue(gh, url):
-    """A queue's open PRs in its order: {"name", "url", "prs": [(pr url, status)]}. Up to 500 items."""
+    """A queue's open PRs in its order: {"name", "url", "prs": [(pr url, status)]}, and for moving one (move_queued)
+    the project's "id", each open PR's item id ("ids": {pr url: item id}) and every item id in order ("order").
+    Up to 500 items."""
     m = QUEUE_URL.match(url or "")
     if not m:
         raise RuntimeError(f"not a GitHub project: {url}")
     kind, login, number = m.groups()
     q, after, name, items = QUEUE % ("organization" if kind == "orgs" else "user"), None, url, []
+    pid, ids, order = None, {}, []
     for _ in range(5):
         r = subprocess.run([gh, "api", "graphql", "-f", "query=" + q, "-f", f"login={login}", "-F", f"n={number}",
                             *(["-f", f"after={after}"] if after else [])], env=_env(), capture_output=True, text=True, timeout=40)
@@ -372,13 +376,70 @@ def _read_queue(gh, url):
         proj = ((json.loads(r.stdout).get("data") or {}).get("owner") or {}).get("projectV2")
         if not proj:
             raise RuntimeError(f"can't read {url}")
-        name, page = proj.get("title") or name, proj["items"]
-        items += [(i["content"]["url"], (i.get("fieldValueByName") or {}).get("name") or "") for i in page["nodes"]
-                  if not i.get("isArchived") and (i.get("content") or {}).get("state") == "OPEN"]
+        name, page, pid = proj.get("title") or name, proj["items"], proj.get("id")
+        order += [i["id"] for i in page["nodes"] if i.get("id")]
+        shown = [i for i in page["nodes"] if not i.get("isArchived") and (i.get("content") or {}).get("state") == "OPEN"]
+        items += [(i["content"]["url"], (i.get("fieldValueByName") or {}).get("name") or "") for i in shown]
+        ids.update((i["content"]["url"], i["id"]) for i in shown if i.get("id"))
         if not page["pageInfo"]["hasNextPage"]:
             break
         after = page["pageInfo"]["endCursor"]
-    return {"name": name, "url": url, "prs": items}
+    return {"name": name, "url": url, "prs": items, "id": pid, "ids": ids, "order": order}
+
+
+MOVE = ("mutation($p:ID!,$i:ID!,$a:ID){updateProjectV2ItemPosition(input:{projectId:$p,itemId:$i,afterId:$a})"
+        "{items(first:1){nodes{id}}}}")
+
+
+def _after(qu, pr, step):
+    """Where a PR goes one place up (step -1) or down (+1) among the queue's open PRs: the item id it's put
+    after (None: first), or False when it's at that end already."""
+    shown = [u for u, _ in qu["prs"]]
+    at = shown.index(pr)
+    to = at + step
+    if to < 0 or to >= len(shown):
+        return False
+    if step > 0:
+        return qu["ids"][shown[to]]
+    full = qu["order"].index(qu["ids"][shown[to]])  # above the one above: after whatever item is before that one
+    return qu["order"][full - 1] if full > 0 else None
+
+
+def move_queued(body):
+    """POST /queue/move {pr, dir: up|down}: the PR one place up or down in its shared order, on GitHub, so
+    everyone's Docket has it at their next read; this one reads the queue again at once."""
+    pr, step = str(body.get("pr") or ""), {"up": -1, "down": 1}.get(body.get("dir"))
+    gh = _which("gh")
+    if not gh or step is None:
+        raise ValueError("gh isn't installed" if not gh else "dir is up or down")
+    with _prs_lock:
+        qu = next((q for q in _queue_data if pr in q["ids"]), None)
+    if not qu:
+        raise ValueError("that PR isn't in a shared order (or it was read before its move): try again in a minute")
+    after = _after(qu, pr, step)
+    if after is not False:
+        r = subprocess.run([gh, "api", "graphql", "-f", "query=" + MOVE, "-f", f"p={qu['id']}", "-f", f"i={qu['ids'][pr]}",
+                            *(["-f", f"a={after}"] if after else [])], env=_env(), capture_output=True, text=True, timeout=40)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout).strip()
+            raise RuntimeError("gh needs the project scope to move PRs: gh auth refresh -s project"
+                               if "scope" in err.lower() else err[-200:])
+    fresh = _read_queue(gh, qu["url"])
+    with _prs_lock:
+        _queue_data[:] = [fresh if q["url"] == qu["url"] else q for q in _queue_data]
+        _publish_queues()
+
+
+def _publish_queues():
+    """The shared orders as the page has them (call with _prs_lock): each PR's place on the PRs, and every
+    queued PR, for the tasks about one."""
+    for p in [*_prs.get("items", []), *_prs.get("reviewing", [])]:
+        p.pop("queue", None)
+    _place(_prs.get("items", []), _queue_data)
+    _prs["reviewing"] = _by_queue(_place(_prs.get("reviewing", []), _queue_data))
+    _prs["queues"] = [{"name": q["name"], "url": q["url"], "count": len(q["prs"]),
+                       "prs": [{"url": u, "rank": i + 1, "status": s[:40]} for i, (u, s) in enumerate(q["prs"])]}
+                      for q in _queue_data]
 
 
 def _place(prs, queues):
@@ -439,9 +500,10 @@ def _read_prs():
             except Exception as e:
                 qerr = str(e)[-200:]
         with _prs_lock:
-            _prs.update(items=_place(mine, queues), read=True, error=None, queue_error=qerr,
-                        queues=[{"name": q["name"], "url": q["url"], "count": len(q["prs"])} for q in queues],
-                        reviewing=_by_queue(_place(reviewing, queues)))
+            _prs.update(items=mine, reviewing=reviewing, read=True, error=None, queue_error=qerr)
+            if queues or not qerr:  # a failed read keeps the last orders
+                _queue_data[:] = queues
+            _publish_queues()
         approved = ok
     except Exception as e:
         print(f"page: couldn't list PRs: {e!r}", file=sys.stderr)
@@ -570,6 +632,9 @@ class Page:
                 "refreshed": reg.get("refreshed"), "sessions": listed, "running": self.busy.locked(),
                 "error": self.error, "folder": str(store.HOME), "prs": prs(),
                 "hours": store.settings().get("hours", "09:00-18:00"), "order": reg.get("order", []), **STATE()}
+
+
+POSTS["/queue/move"] = move_queued
 
 
 def serve(port=PORT, index=None, routes=None):
