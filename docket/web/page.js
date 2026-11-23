@@ -408,6 +408,7 @@ window.docketPage = function (el, opts = {}) {
       actions: ["done", "snooze", "waiting", "drop", "open"],
       minutes: true,
       mark: (t) => (TEAM.has(t.id) ? "team" : ""),  // team work: purple
+      working: (t, action) => /^queue_/.test(action) ? `Moving it ${action.slice(6)} in the shared order on GitHub…` : "",
       load,
       act: (t, action, value) => both(v, act(t, action, value)),
       reply: (t, text) => both(v, post("/reply", { id: t.id, text })),
@@ -429,6 +430,7 @@ window.docketPage = function (el, opts = {}) {
         const mv = e.target.closest("button[data-qmove]");
         if (mv) {
           const was = teamOf(d, { sources: [{ link: mv.dataset.pr }], status: "open" });
+          mv.textContent = "…"; mv.disabled = true;  // GitHub takes a moment
           try { qError = ""; return moved(was, await both(v, post("/queue/move", { pr: mv.dataset.pr, dir: mv.dataset.qmove })), mv.dataset.qmove); }
           catch (err) { qError = err.message; return d; }
         }

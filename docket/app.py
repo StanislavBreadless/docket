@@ -285,6 +285,7 @@ PRS_EVERY = 180
 _prs = {"at": 0, "items": [], "reviewing": [], "error": None}
 _prs_lock = threading.Lock()
 _queue_data = []  # the shared orders as last read (_read_queue), for moving a PR in one
+_moves = [0]  # moves made here: a read that began before one doesn't put the old order back
 
 
 def _last_commit(n):
@@ -407,7 +408,7 @@ def _after(qu, pr, step):
 
 def move_queued(body):
     """POST /queue/move {pr, dir: up|down}: the PR one place up or down in its shared order, on GitHub, so
-    everyone's Docket has it at their next read; this one reads the queue again at once."""
+    everyone's Docket has it at their next read; this one has it at once."""
     pr, step = str(body.get("pr") or ""), {"up": -1, "down": 1}.get(body.get("dir"))
     gh = _which("gh")
     if not gh or step is None:
@@ -424,18 +425,18 @@ def move_queued(body):
             err = (r.stderr or r.stdout).strip()
             raise RuntimeError("gh needs the project scope to move PRs: gh auth refresh -s project"
                                if "scope" in err.lower() else err[-200:])
-    try:
-        fresh = _read_queue(gh, qu["url"])
-    except Exception as e:  # GitHub has the move; a failed read shows it as made here
-        print(f"page: reading the shared order after a move: {e!r}", file=sys.stderr)
-        prs, at, order = list(qu["prs"]), [u for u, _ in qu["prs"]].index(pr), [i for i in qu["order"] if i != qu["ids"][pr]]
-        if after is not False:
-            prs.insert(at + step, prs.pop(at))
-            order.insert(order.index(after) + 1 if after in order else 0, qu["ids"][pr])
-        fresh = {**qu, "prs": prs, "order": order if after is not False else qu["order"]}
+    # the queue as GitHub has it now, worked out here: a read of the whole project takes seconds (more when GitHub
+    # is slow), so the page has the move at once and the next read, soon, checks it
+    prs, at, order = list(qu["prs"]), [u for u, _ in qu["prs"]].index(pr), [i for i in qu["order"] if i != qu["ids"][pr]]
+    if after is not False:
+        prs.insert(at + step, prs.pop(at))
+        order.insert(order.index(after) + 1 if after in order else 0, qu["ids"][pr])
+    fresh = {**qu, "prs": prs, "order": order if after is not False else qu["order"]}
     with _prs_lock:
         _queue_data[:] = [fresh if q["url"] == qu["url"] else q for q in _queue_data]
+        _moves[0] += 1
         _publish_queues()
+        _prs["at"] = min(_prs["at"], time.time() - PRS_EVERY + 30)  # read again in half a minute
 
 
 def _publish_queues():
@@ -481,7 +482,7 @@ def prs():
 
 
 def _read_prs():
-    gh, approved = _which("gh"), None
+    gh, approved, moves = _which("gh"), None, _moves[0]
     try:
         if not gh:
             raise RuntimeError("gh isn't installed")
@@ -509,7 +510,7 @@ def _read_prs():
                 qerr = str(e)[-200:]
         with _prs_lock:
             _prs.update(items=mine, reviewing=reviewing, read=True, error=None, queue_error=qerr)
-            if queues or not qerr:  # a failed read keeps the last orders
+            if (queues or not qerr) and moves == _moves[0]:  # a failed read keeps the last orders, so does one a move overtook
                 _queue_data[:] = queues
             _publish_queues()
         approved = ok

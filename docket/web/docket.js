@@ -19,6 +19,7 @@
 //     listed(task, data): bool        optional: a task that stays in the lists while it waits or is put off
 //                         (greyed there, not folded away): something still to decide on
 //     mark(task, data): class         optional: a class on the task's row (a page's own marking)
+//     working(task, action): text     optional: said at once while an action that takes a while runs
 //     busy(task, data): bool          optional: someone else is on it now (your agent): greyed like a
 //                         waiting one, and not marked next
 //     places(task, data, action): [{id, title, blocked}] or null   optional: the button opens a list
@@ -223,7 +224,8 @@
     }
 
     async function act(t, action, value, label, keep) {
-      const before = { ...t };
+      const before = { ...t }, wait = src.working && src.working(t, action);
+      if (wait) toast(wait);
       try { data = await src.act(t, action, value); } catch (e) { return toast(e.message || "That didn't work."); }
       if (label) { lastUndo = before; toast(`${label}: ${t.title}`, true); }
       else if (data && data.notice) toast(data.notice);
