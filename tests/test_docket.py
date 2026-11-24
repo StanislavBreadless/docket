@@ -517,6 +517,20 @@ class Page(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("Write the launch post", [t["title"] for t in json.loads(body)["tasks"]])
 
+    def test_never_in_a_frame_and_only_this_server(self):
+        with urllib.request.urlopen(self.url + "/", timeout=10) as r:
+            self.assertEqual(r.headers["X-Frame-Options"], "DENY")
+            self.assertIn("frame-ancestors 'none'", r.headers["Content-Security-Policy"])
+            self.assertIn("connect-src 'self'", r.headers["Content-Security-Policy"])
+
+    def test_a_huge_body_is_refused(self):
+        req = urllib.request.Request(self.url + "/task", data=b"{}", headers={"X-Docket": "1", "Content-Length": str(app.MAX_BODY + 1)})
+        try:
+            code = urllib.request.urlopen(req, timeout=10).status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        self.assertEqual(code, 413)
+
     def test_a_bad_action_is_a_400(self):
         self.assertEqual(self.call("/task", {"id": "nope", "action": "done"}, {"X-Docket": "1"})[0], 400)
 

@@ -644,6 +644,7 @@ class Page:
 
 
 POSTS["/queue/move"] = move_queued
+MAX_BODY = 1 << 20  # a POST's body: a note or a task is a few hundred bytes
 
 
 def serve(port=PORT, index=None, routes=None):
@@ -656,6 +657,12 @@ def serve(port=PORT, index=None, routes=None):
              **{f"/{name}": (WEB / name, kind) for name, kind in (("docket.js", "text/javascript"), ("page.js", "text/javascript"),
                                                                 ("esc.js", "text/javascript"), ("docket.css", "text/css"))}}
     routes = routes or {}
+    # Never inside another site's frame (clickjacking). Docket's own page also loads and calls only this
+    # server, so a link that slipped through can't load or send anything elsewhere; an app's own page
+    # (`index`) sets its own rules.
+    policy = "frame-ancestors 'none'" if index else (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
     # which page code is on disk: when an update changes it, an open page reloads itself (page.js)
     code = lambda: str(max(path.stat().st_mtime_ns for path, _ in files.values()))
 
@@ -672,6 +679,8 @@ def serve(port=PORT, index=None, routes=None):
             if (self.headers.get("Host") or "").split(":")[0] not in ("127.0.0.1", "localhost"):
                 return self._send(403, b'{"error": "local only"}')
             url = urlparse(self.path)
+            if self.command == "POST" and not 0 <= int(self.headers.get("Content-Length") or 0) <= MAX_BODY:
+                return self._send(413, b'{"error": "too big"}')
             if self.command == "GET" and url.path in files:
                 file, kind = files[url.path]
                 return self._send(200, file.read_bytes(), f"{kind}; charset=utf-8")
@@ -711,6 +720,10 @@ def serve(port=PORT, index=None, routes=None):
             self.send_header("Content-Type", content_type or "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")  # an update must reach the page without a hard reload
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", policy)
             self.end_headers()
             self.wfile.write(body)
 

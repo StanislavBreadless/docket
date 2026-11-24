@@ -245,7 +245,7 @@ window.docketPage = function (el, opts = {}) {
     // every task it has open (and done today), whether or not it's on your list: the card is where you see your agent
     const listed = new Set((data.tasks || []).map((x) => x.id));
     const shown = f.tasks.filter((t) => col(t) !== "done" || new Date(t.statusAt || t.updatedAt).toLocaleDateString("sv") === data.today);
-    const ln = (href, text) => href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${text}</a>` : "";
+    const ln = (href, text) => /^https:\/\//.test(href || "") ? `<a href="${esc(href)}" target="_blank" rel="noopener">${text}</a>` : "";
     const row = (t, tone) => {
       const p = t.pr;
       const facts = p ? [ln(p.url, esc(p.key.split("/")[1])), CI[p.ci], p.draft && "draft", p.conflicts && "conflicts",
