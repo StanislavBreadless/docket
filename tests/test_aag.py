@@ -65,15 +65,28 @@ class Mapping(unittest.TestCase):
         self.assertEqual(reg["tasks"], [mine])  # yours stay
         self.assertFalse(aag.sync(reg, feed(), DAY, NOW))
 
-    def test_a_review_the_agents_agree_on_waits_on_the_humans_until_aag_closes_it(self):
+    def test_a_review_someone_else_asked_your_agent_for_is_on_your_list_only_once_aag_asks_you(self):
+        # the feed is valera's: kalman's agent asks hers to review
+        reg, by = synced(a("1", "working", "Reviewing", role="reviewer"),
+                         a("2", "waiting", "Waiting on the author", role="reviewer"),
+                         a("3", "working", "Reviewing", role="reviewer", requestedBy="valera"),  # she asked for it: hers
+                         a("4", "needs_you", "Your decision", role="reviewer"))
+        self.assertEqual(sorted(by), ["aag-3", "aag-4"])
+
+    def test_a_review_the_agents_agree_on_is_on_your_list_only_when_aag_asks_for_your_approval(self):
         reviewed = dict(role="reviewer", status="agents_done")
         reg, by = synced(a("1", "waiting", "Reviewed; the merge is up to humans", **reviewed),
-                         a("2", "waiting", "Reviewed; valera asks for the human review next", **reviewed, statusAt="2026-02-20T12:00:00Z"),
+                         a("2", "waiting", "Reviewed; valera asks for the human review next", **reviewed),
                          a("3", "needs_you", "Your approval: the agents agree", **reviewed))
-        self.assertEqual(sorted(by), ["aag-1", "aag-2", "aag-3"], "reviewed long ago, still waiting: it's there")
-        self.assertEqual([by[k]["status"] for k in ("aag-1", "aag-2", "aag-3")], ["waiting", "waiting", "open"])
-        aag.sync(reg, feed(a("1", "done", "Merged", status="done", role="reviewer")), DAY, NOW)  # aag closes it
-        self.assertEqual(reg["tasks"][0]["status"], "done")
+        self.assertEqual(sorted(by), ["aag-3"], "the PR's people have the move: the card has it, not your list")
+        self.assertEqual(by["aag-3"]["status"], "open")
+        # one that was on your list, in your order too, goes when the agents agree, and comes back when it's yours
+        reg, by = synced(a("4", "waiting", "Waiting on the author", role="reviewer"))
+        reg["order"] = ["aag-4"]
+        aag.sync(reg, feed(a("4", "waiting", "Reviewed", **reviewed)), DAY, NOW)
+        self.assertEqual(reg["tasks"], [])
+        aag.sync(reg, feed(a("4", "needs_you", "Your approval: the agents agree", **reviewed)), DAY, NOW)
+        self.assertEqual([(t["id"], t["status"]) for t in reg["tasks"]], [("aag-4", "open")])
 
     def test_your_own_task_waits_for_nobody_and_your_review_is_deep_work(self):
         _, by = synced(a("1", "needs_you", "Your review", requestedBy="valera", phase="owner_review"))
@@ -117,6 +130,35 @@ class Reconcile(unittest.TestCase):
         with mock.patch.object(tasks, "extra", aag.extra):
             tasks.merge(reg, {"updates": [{"id": reg["tasks"][0]["id"], **u}]}, DAY, NOW)
         return reg["tasks"][0]
+
+    def test_a_merged_pr_closes_its_agents_task_even_while_aag_still_lists_it(self):
+        reg, by = synced(a("1", "needs_you", "Answer: see the DM thread"))
+        self.assertEqual(tasks.pr_of(by["aag-1"]), "o/r#1")  # aag's PR, not its Slack threads
+        self.assertTrue(tasks.settled(reg, {"o/r#1": {"merged": True, "at": AT}}, NOW))
+        t = by["aag-1"]
+        self.assertEqual((t["status"], t["closed_by"]), ("done", "gh"))
+        self.assertIn("o/r#1 was merged", t["evidence"])
+        aag.sync(reg, feed(a("1", "needs_you", "Answer: see the DM thread")), DAY, NOW)  # a stopped aag says the same
+        self.assertEqual(reg["tasks"][0]["status"], "done")
+        aag.sync(reg, feed(a("1", "done", "Merged")), DAY, NOW)  # aag's own done agrees
+        self.assertEqual((reg["tasks"][0]["status"], reg["tasks"][0]["closed_by"]), ("done", "aag"))
+
+    def test_a_new_move_from_aag_has_the_say_again_and_the_same_pr_doesnt_close_it_twice(self):
+        reg, by = synced(a("1", "needs_you"))
+        ended = {"o/r#1": {"merged": False, "at": AT}}
+        tasks.settled(reg, ended, NOW)
+        aag.sync(reg, feed(a("1", "needs_you", "Reopen the PR?")), DAY, NOW)
+        self.assertEqual(reg["tasks"][0]["status"], "open")
+        self.assertFalse(tasks.settled(reg, ended, NOW))
+        self.assertEqual(reg["tasks"][0]["status"], "open")
+
+    def test_close_ended_asks_gh_about_the_agents_pr(self):
+        reg, _ = synced(a("1", "needs_you"))
+        tasks.save(reg)
+        with mock.patch.object(app, "_ended", return_value={"o/r#1": {"merged": True, "at": AT}}) as ended:
+            app._close_ended("gh")
+        self.assertEqual(ended.call_args.args[1], {"o/r#1"})
+        self.assertEqual(tasks.load()["tasks"][0]["status"], "done")
 
     def test_while_the_feed_is_read_the_refresh_adds_what_the_thread_says_but_not_its_state(self):
         reg, _ = synced(a("1", "needs_you"))
@@ -193,6 +235,18 @@ class Reading(unittest.TestCase):
         self.assertIsNone(aag.command("off"))
         with self.assertRaises(RuntimeError):
             aag.command("vps")
+
+    def test_in_auto_agents_vm_through_its_script(self):
+        script = os.path.join(tempfile.mkdtemp(), "aag-vm")
+        with open(script, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(script, 0o755)
+        self.assertEqual(aag.command(f"vm {script}"), [script, "aag", "status", "--json"])
+        with mock.patch.object(app, "_which", return_value=script):
+            self.assertEqual(aag.command("vm")[0], script)
+        with mock.patch.object(app, "_which", return_value=None), mock.patch.object(aag, "VM_SCRIPT", "/nowhere/aag-vm"):
+            with self.assertRaises(RuntimeError):
+                aag.command("vm")
 
     def test_an_older_aag_or_a_failed_run_is_an_error(self):
         for out in (subprocess.CompletedProcess([], 0, "UP (pid 1). Turn off: aag stop.\n", ""),

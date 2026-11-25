@@ -18,7 +18,7 @@ window.docketPage = function (el, opts = {}) {
     }
     const out = await res.json();
     if (!res.ok) throw new Error(out.error || "That didn't work.");
-    return out;
+    return out.tasks ? team(out) : out;
   }
   const minutes = (t) => +t.slice(0, 2) * 60 + +t.slice(3, 5);
   const hhmm = (m) => String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
@@ -28,7 +28,48 @@ window.docketPage = function (el, opts = {}) {
   // estimate (est), carried on into the next gap when it doesn't fit. Worked out again on every load.
   const PRI = ["P0", "P1", "P2"];
   const pri = (t) => (t.star ? -1 : 0) + ((PRI.indexOf(t.priority) + 4) % 4);
-  const place = (d, t) => { const i = (d.order || []).indexOf(t.id); return i < 0 ? Infinity : i; };
+  const place = (d, t) => { const i = teamOrder(d).indexOf(t.id); return i < 0 ? Infinity : i; };
+  // The team's shared order (a GitHub Project in settings "queues"; app.py reads it). A task about a PR in it
+  // (its review, its links, your agent's PR) has the PR's place there: "team #3 · Review now". One that isn't
+  // Parked is team work: purple, in Work, and in the team's order among the others like it (teamOrder).
+  const prKey = (u) => { const m = String(u || "").match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/i); return m ? m[1].toLowerCase() + "#" + m[2] : null; };
+  const teamCache = new WeakMap();
+  function teamOf(d, t) {
+    let m = teamCache.get(d);
+    if (!m) {
+      m = new Map();
+      for (const q of (d.prs || {}).queues || []) for (const p of q.prs || []) {
+        const k = prKey(p.url);
+        if (k && !m.has(k)) m.set(k, { ...p, queue: q.name, queueUrl: q.url, of: q.count, parked: /park/i.test(p.status || "") });
+      }
+      teamCache.set(d, m);
+    }
+    const f = t.aag && (((d.aag || {}).feed || {}).tasks || []).find((x) => "aag-" + x.id === t.id);
+    const urls = [t.review, ...(t.sources || []).map((s) => s.link), f && f.pr && f.pr.url];
+    return urls.map((u) => m.get(prKey(u))).filter(Boolean).sort((a, b) => a.rank - b.rank)[0] || null;
+  }
+  const live = (t) => t.status === "open" || t.status === "waiting";
+  const teamRank = (d, t) => { const q = t && live(t) && teamOf(d, t); return q && !q.parked ? q.rank : null; };
+  let TEAM = new Set();  // the tasks that are team work, as of the last load (work() reads it)
+  // your order, with team work in the team's order: the places your order gives team work are filled in the
+  // team's order, and team work not in your order yet goes next to its neighbours there (else at the end)
+  const orderCache = new WeakMap();
+  function teamOrder(d) {
+    if (orderCache.has(d)) return orderCache.get(d);
+    const byId = new Map((d.tasks || []).map((t) => [t.id, t])), rk = (i) => teamRank(d, byId.get(i));
+    const ids = (d.order || []).filter((i) => byId.has(i)), isTeam = (i) => rk(i) !== null;
+    const extra = (d.tasks || []).filter((t) => TEAM.has(t.id) && rk(t.id) !== null && !ids.includes(t.id)).sort((a, b) => rk(a.id) - rk(b.id));
+    for (const t of extra) {
+      const below = ids.findIndex((i) => isTeam(i) && rk(i) > rk(t.id)), above = ids.map(isTeam).lastIndexOf(true);
+      ids.splice(below >= 0 ? below : above >= 0 ? above + 1 : ids.length, 0, t.id);
+    }
+    const slots = ids.map((i, k) => (isTeam(i) ? k : -1)).filter((k) => k >= 0);
+    const team = slots.map((k) => ids[k]).sort((a, b) => rk(a) - rk(b));  // stable: one PR's tasks keep your order
+    slots.forEach((k, j) => { ids[k] = team[j]; });
+    orderCache.set(d, ids);
+    return ids;
+  }
+  let qError = "";  // a move in the shared order that GitHub refused, shown on the PR card
   const byOrder = (a, b, d) => { const x = place(d, a), y = place(d, b); return x === y ? 0 : x === Infinity ? 1 : y === Infinity ? -1 : x - y; };
   function plan(d) {
     const [from, to] = String(d.hours || "09:00-18:00").split("-").map((x) => minutes(x.trim()));
@@ -136,25 +177,49 @@ window.docketPage = function (el, opts = {}) {
   // Pull requests from the last two weeks, read with gh on this computer: yours by what they need, and the
   // ones you review by where they stand from your side. The tab is remembered in this browser.
   const PR = { ready: "go", conflicts: "bad", "CI failing": "bad", "changes requested": "bad", "CI running": "wait", "needs review": "wait", draft: "",
-               "review requested": "bad", "re-requested": "bad", "new commits": "bad", "waiting on author": "wait", approved: "go" };
+               "review requested": "bad", "re-requested": "bad", "new commits": "bad", "not approved": "bad", "waiting on author": "wait", approved: "go" };
   let prTab = "mine"; try { prTab = localStorage.getItem("docket-pr-tab") || "mine"; } catch {}
+  // a PR's place in the team's shared order (a GitHub Project in settings "queues"): "#3 · Review now"
+  const qPlace = (x) => x.queue ? ` · <a class="qp${/now/i.test(x.queue.status) ? " now" : ""}" href="${esc(x.queue.url)}" target="_blank" rel="noopener"
+      title="${esc(x.queue.name)}: ${x.queue.rank} of ${x.queue.of}">#${x.queue.rank}${x.queue.status ? " · " + esc(x.queue.status) : ""}</a>` : "";
   function prs(data) {
-    const p = data.prs || {}, cutoff = Date.now() - 14 * 86400e3, recent = (l) => (l || []).filter((x) => Date.parse(x.updated + "Z") >= cutoff);
+    const p = data.prs || {}, cutoff = Date.now() - 14 * 86400e3, recent = (l) => (l || []).filter((x) => x.queue || Date.parse(x.updated + "Z") >= cutoff);
     const mine = recent(p.items), rev = recent(p.reviewing), list = prTab === "reviewing" ? rev : mine;
     const all = (prTab === "reviewing" ? p.reviewing : p.items) || [], older = all.length - list.length;
-    const row = (x) => `<div class="pr"><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>
-      <div class="s"><span class="st ${PR[x.state] || ""}">${esc(x.state)}</span>${x.draft && x.state !== "draft" ? " · draft" : ""}
+    const row = (x) => `<div class="pr${x.queue && !/park/i.test(x.queue.status) ? " team" : ""}"><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>
+      <div class="s"><span class="st ${PR[x.state] || ""}">${esc(x.state === "not approved" ? "reviewed, not approved" : x.state)}</span>${qPlace(x)}${x.queue ? moves(x.url, x.queue.name, "data-qmove") : ""}${x.draft && x.state !== "draft" ? " · draft" : ""}
         · ${esc(x.repo.split("/")[1])}#${x.number}${prTab === "reviewing" && x.author ? " · " + esc(x.author) : ""} · ${ago(Date.parse(x.updated + "Z") / 1000)}</div></div>`;
     const part = (title, states) => { const l = list.filter((x) => states.includes(x.state)); return l.length ? `<div class="sub">${title}</div>` + l.map(row).join("") : ""; };
     const body = prTab === "reviewing"
-      ? part("Needs your review", ["review requested", "re-requested", "new commits"]) + part("Waiting on the author", ["waiting on author"]) + part("Approved by you", ["approved"])
+      ? part("Needs your review", ["review requested", "re-requested", "new commits", "not approved"]) + part("Waiting on the author", ["waiting on author"]) + part("Approved by you", ["approved"])
       : part("Ready to merge", ["ready"]) + part("Needs you", ["conflicts", "CI failing", "changes requested"]) + part("Waiting", ["needs review", "CI running"]) + part("Drafts", ["draft"]);
     const tab = (k, name, n) => `<button data-prtab="${k}" class="${prTab === k ? "on" : ""}">${name}${n ? ` <span class="count">${n}</span>` : ""}</button>`;
     return `<div class="seg prtabs">${tab("mine", "Mine", mine.length)}${tab("reviewing", "Reviewing", rev.filter((x) => PR[x.state] === "bad").length || rev.length)}</div>`
       + (p.error ? `<p class="err" style="font-size:13px">gh: ${esc(p.error)}</p>` : "")
+      + (p.queue_error ? `<p class="err" style="font-size:13px">Shared order: ${esc(p.queue_error)}</p>` : "")
+      + (qError ? `<p class="err" style="font-size:13px">Moving in the shared order: ${esc(qError)}</p>` : "")
       + (body || `<p class="empty">${p.loading ? "Reading your PRs…" : prTab === "reviewing" ? "Nothing to review from the last two weeks." : "No open PRs in the last two weeks."}</p>`)
-      + `<p class="meta" style="margin:8px 0 0">${older ? `+ ${older} older · ` : ""}<a href="https://github.com/pulls${prTab === "reviewing" ? "/review-requested" : ""}" target="_blank" rel="noopener">All on GitHub ↗</a></p>`;
+      + `<p class="meta" style="margin:8px 0 0">${older ? `+ ${older} older · ` : ""}${(p.queues || []).map((q) => `<a href="${esc(q.url)}" target="_blank" rel="noopener">${esc(q.name)} ↗</a> · `).join("")}<a href="https://github.com/pulls${prTab === "reviewing" ? "/review-requested" : ""}" target="_blank" rel="noopener">All on GitHub ↗</a></p>`;
   }
+  // one place up or down in the shared order, on GitHub: everyone's Docket follows at its next read
+  const moves = (url, queue, attr) => ["up", "down"].map((dir) => `<button class="linkish qmove" ${attr}="${dir}" data-pr="${esc(url)}"
+      title="One place ${dir} in ${esc(queue)}, on GitHub: everyone's Docket follows">${dir === "up" ? "↑" : "↓"}</button>`).join("");
+  // a task's place in the shared order, on its row and its card, with ↑ ↓
+  function teamChip(d, t, where) {
+    const q = teamOf(d, t);
+    if (!q) return "";
+    const btns = ["up", "down"].map((dir) => `<button class="linkish qmove" ${where === "row" ? "data-row-act" : "data-act"}="queue_${dir}"
+      title="One place ${dir} in ${esc(q.queue)}, on GitHub: everyone's Docket follows">${dir === "up" ? "↑" : "↓"}</button>`).join("");
+    return `<a class="teamchip${q.parked ? " parked" : ""}" href="${esc(q.queueUrl)}" target="_blank" rel="noopener" title="${esc(q.queue)}: ${q.rank} of ${q.of}">team #${q.rank}${q.status ? " · " + esc(q.status) : ""}</a>${btns}`;
+  }
+  // what a move did, said on the page (docket.js shows data.notice): the PR's new place, or that it's at the end already
+  function moved(was, out, dir) {
+    const now = was && teamOf(out, { sources: [{ link: was.url }], status: "open" }), n = was && was.url.split("/").pop();
+    if (now) out.notice = now.rank === was.rank ? `#${n} is ${dir === "up" ? "first" : "last"} in ${now.queue} already.`
+      : `#${n} is team #${now.rank} now (was #${was.rank}), on GitHub: everyone's Docket follows.`;
+    return out;
+  }
+  const withTeam = (more) => (t, d, where) => [teamChip(d, t, where), more(t, d, where)].filter(Boolean).join(" · ");
   // a card on the side; its title folds it to just the title and opens it again, remembered in this browser
   const closedCards = () => { try { return JSON.parse(localStorage.getItem("docket-closed") || "[]"); } catch { return []; } };
   function toggleClosed(key) {
@@ -180,7 +245,7 @@ window.docketPage = function (el, opts = {}) {
     // every task it has open (and done today), whether or not it's on your list: the card is where you see your agent
     const listed = new Set((data.tasks || []).map((x) => x.id));
     const shown = f.tasks.filter((t) => col(t) !== "done" || new Date(t.statusAt || t.updatedAt).toLocaleDateString("sv") === data.today);
-    const ln = (href, text) => href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${text}</a>` : "";
+    const ln = (href, text) => /^https:\/\//.test(href || "") ? `<a href="${esc(href)}" target="_blank" rel="noopener">${text}</a>` : "";
     const row = (t, tone) => {
       const p = t.pr;
       const facts = p ? [ln(p.url, esc(p.key.split("/")[1])), CI[p.ci], p.draft && "draft", p.conflicts && "conflicts",
@@ -203,7 +268,7 @@ window.docketPage = function (el, opts = {}) {
   // it: a Linear issue or review, deep work that isn't on Linear yet, and everything your agent does (its
   // task for an issue shows on the issue's row). Triage: the back-and-forth, and new work to place. The tab
   // is remembered in this browser.
-  const work = (t) => !!(t.linear || (t.issue && !t.aag) || (t.aag && !t.issue) || (t.kind === "deep" && !t.issue));
+  const work = (t) => !!(t.linear || (t.issue && !t.aag) || (t.aag && !t.issue) || (t.kind === "deep" && !t.issue) || TEAM.has(t.id));
   // who is on a piece of work: your agent's run (aag's feed) and the Claude sessions the refresh tied to it
   const feedOf = (d, t) => t.aag && (((d.aag || {}).feed || {}).tasks || []).find((x) => "aag-" + x.id === t.id);
   const sessionsOf = (d, t) => (t.sessions || []).map((n) => (d.sessions || []).find((s) => s.title === n && !s.agent)).filter(Boolean);
@@ -212,7 +277,7 @@ window.docketPage = function (el, opts = {}) {
   // approval aag says so (needs_you); a review the agents agree on waits for a draft to be made ready
   // (the author), then for the other reviewers and the merge.
   function waitingOn(f) {
-    const w = f.waiting, names = (w.names || []).join(", "), what = String(w.what || w.who || "").replace(/^humans: /, "");
+    const w = f.waiting, names = (w.names || []).join(", "), what = String(w.what || w.who || "").replace(/^(humans|the author): /, "");
     if (w.who === "owner") return "you";
     if (w.who === "people" && !names && f.pr && f.pr.draft) return "the author: still a draft";
     if (w.who === "people" && !names) return "others: " + what;
@@ -325,7 +390,8 @@ window.docketPage = function (el, opts = {}) {
     <div data-view-el="triage"></div><div data-view-el="work"></div>`;
   const box = (v) => el.querySelector(`[data-view-el="${v}"]`);
   let loading = null;  // the two views load the same state: one fetch for both
-  const load = () => loading || (loading = fetch("/state").then((r) => r.json()).then((d) => { fresh(d.code); return d; }).finally(() => setTimeout(() => { loading = null; }, 300)));
+  const load = () => loading || (loading = fetch("/state").then((r) => r.json()).then((d) => { fresh(d.code); return team(d); }).finally(() => setTimeout(() => { loading = null; }, 300)));
+  const team = (d) => { TEAM = new Set((d.tasks || []).filter((t) => teamRank(d, t) !== null).map((t) => t.id)); return d; };
   // Docket's page code: when an update changes it, the page reloads itself, unless you're typing or dragging
   let code = null;
   function fresh(c) {
@@ -341,6 +407,8 @@ window.docketPage = function (el, opts = {}) {
       assistant: opts.assistant,
       actions: ["done", "snooze", "waiting", "drop", "open"],
       minutes: true,
+      mark: (t) => (TEAM.has(t.id) ? "team" : ""),  // team work: purple
+      working: (t, action) => /^queue_/.test(action) ? `Moving it ${action.slice(6)} in the shared order on GitHub…` : "",
       load,
       act: (t, action, value) => both(v, act(t, action, value)),
       reply: (t, text) => both(v, post("/reply", { id: t.id, text })),
@@ -359,6 +427,13 @@ window.docketPage = function (el, opts = {}) {
         }
         const blk = e.target.closest(".blk[data-task]");
         if (blk && !e.target.closest("a")) { show(blk.dataset.view); views[blk.dataset.view].select(blk.dataset.task); return; }
+        const mv = e.target.closest("button[data-qmove]");
+        if (mv) {
+          const was = teamOf(d, { sources: [{ link: mv.dataset.pr }], status: "open" });
+          mv.textContent = "…"; mv.disabled = true;  // GitHub takes a moment
+          try { qError = ""; return moved(was, await both(v, post("/queue/move", { pr: mv.dataset.pr, dir: mv.dataset.qmove })), mv.dataset.qmove); }
+          catch (err) { qError = err.message; return d; }
+        }
         const b = e.target.closest("button[data-prtab]"); if (!b) return;
         prTab = b.dataset.prtab; try { localStorage.setItem("docket-pr-tab", prTab); } catch {}
         return d;
@@ -379,6 +454,11 @@ window.docketPage = function (el, opts = {}) {
       return post("/task", { id: t.id, action: "order", value: order });
     }
     if (action === "linear_review") return post("/linear/review", { id: t.id });
+    if (action === "queue_up" || action === "queue_down") {
+      const q = teamOf(views.work.data || views.triage.data, t);
+      if (!q) throw new Error("It isn't in the shared order any more.");
+      return moved(q, await post("/queue/move", { pr: q.url, dir: action.slice(6) }), action.slice(6));
+    }
     if (action !== "restore") return post("/task", { id: t.id, action, value });
     // undo: back to the view, or the status and day, it had before
     const today = views.triage.data.today, cur = (views.triage.data.tasks || []).find((x) => x.id === t.id);
@@ -411,7 +491,7 @@ window.docketPage = function (el, opts = {}) {
     lists: [{ key: "next", title: "Up next", empty: "Nothing else due today.", pick: (l) => l }],
     listed: (t) => work(t),  // new work to place stays here, greyed while it waits, not folded away
     // new work to place: marked, with what Work would show; → Work puts it in its place in your order
-    more: (t, d, where) => work(t) ? (where === "row" ? `<span class="chip">deep work · → Work</span> ` : "") + moreWork(t, d, where) : "",
+    more: withTeam((t, d, where) => work(t) ? (where === "row" ? `<span class="chip">deep work · → Work</span> ` : "") + moreWork(t, d, where) : ""),
     add: (text, kind) => both("triage", post("/task", { action: "add", value: text, kind })),
     empty: (d) => d.refreshed ? `<p class="title">Nothing due today.</p><p class="meta">Everything open is waiting on others or planned for later. Real work is under Work.</p>`
       : `<p class="title">No tasks yet.</p><p class="meta">The first refresh reads the last 3 days of whatever your Claude Code is connected to: Slack, email, calendar, GitHub, Linear, Notion. It takes a few minutes.</p>`,
@@ -422,10 +502,19 @@ window.docketPage = function (el, opts = {}) {
     can: (t, a) => a !== "triage" || (!t.linear && !t.issue && !t.aag),  // an issue's and your agent's work stay Work
     queue: { heading: "Your order", empty: "Nothing in your order yet: new work comes in Triage, where → Work puts it in its place." },
     // your order as it is now, and what it had that isn't shown (snoozed, later) stays at the end
-    order: (ids, shown) => both("work", post("/task", { id: ids[0] || shown[0], action: "order", value: [...ids, ...(views.work.data.order || []).filter((i) => !shown.includes(i))] })),
+    // team work keeps the team's order: a drag that crosses two team rows is saved, then shown as the team has it
+    async order(ids, shown) {
+      const d = views.work.data, rk = (i) => teamRank(d, (d.tasks || []).find((x) => x.id === i)), team = ids.filter((i) => rk(i) !== null);
+      const out = await both("work", post("/task", { id: ids[0] || shown[0], action: "order", value: [...ids, ...(d.order || []).filter((i) => !shown.includes(i))] }));
+      if (team.some((i, k) => k && rk(team[k - 1]) > rk(i))) {
+        setTimeout(() => views.work.reload(), 0);
+        throw new Error("Purple ones keep the team's order: ↑ ↓ moves one in the shared order, for everyone.");
+      }
+      return out;
+    },
     // your order, then priority (Docket's own, after this), and Linear's order within one
     rank: (a, b, d) => { const x = level(d, a), y = level(d, b); return byOrder(a, b, d) || (a.priority === b.priority ? x[0] - y[0] || x[1] - y[1] : 0); },
-    more: moreWork,
+    more: withTeam(moreWork),
     empty: (d) => linearLine(d),
   });
   // Dragging a planned block onto another: its tasks go just before that block's, in the order the grid

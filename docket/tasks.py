@@ -31,6 +31,8 @@ CLOSED = ("done", "dropped")
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MOMENT = re.compile(r"^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$")
 KEEP_CLOSED_DAYS = 14
+# a dropped task that names a report (things()) is kept longer: later emails about the report stay off the list
+KEEP_DROPPED_DAYS = 60
 TEXT = {"title": 160, "next": 240, "why": 240, "who": 80}
 KEEP_NOTES = 12
 ESTIMATES = {"15", "30", "60", "120", "240"}
@@ -135,11 +137,26 @@ def _titles(items):
     return [t for t in (_text(x, 120) for x in (items if isinstance(items, list) else [])[:5]) if t]
 
 
+# the one thing a task is about, whatever email or message brought it: an Immunefi report (each new message
+# on it comes as an email of its own)
+THING = [(re.compile(r"\bimmunefi\b[^\n]*?\breport\s*#?\s*(\d{4,7})", re.I), "immunefi"),
+         (re.compile(r"bugs\.immunefi\.com/\S*?/(?:submission|report)s?/(\d{4,7})"), "immunefi")]
+
+
+def things(t):
+    """What a task is about, as keys ("immunefi:12345"), from its title and its links."""
+    text = " ".join([t.get("title") or "", *(s.get("link") or "" for s in t.get("sources") or [])])
+    return {f"{kind}:{m}" for rx, kind in THING for m in rx.findall(text)}
+
+
 def _duplicate(tasks, n):
-    """Already on the list, open or closed: a task you dropped or finished doesn't come back as new."""
+    """Already on the list, open or closed: a task you dropped or finished doesn't come back as new. A
+    dropped one covers the thing it's about: a later email about the same report isn't a new task."""
     title = n["title"].casefold()
     links = {_key(s["link"]) for s in n["sources"] if s["link"]}
-    return any(t["title"].casefold() == title or links & {_key(s["link"]) for s in t["sources"] if s["link"]} for t in tasks)
+    about = things(n)
+    return any(t["title"].casefold() == title or links & {_key(s["link"]) for s in t["sources"] if s["link"]}
+               or (t["status"] == "dropped" and about & things(t)) for t in tasks)
 
 
 def meetings(items):
@@ -220,9 +237,13 @@ def reviewed(reg, approved, now):
 
 
 def pr_of(t):
-    """The one PR a task is about, as pr_key gives it: its "review" link; or the one PR it links, when
-    all its links go there or it's titled Review…/Approve…; else None."""
+    """The one PR a task is about, as pr_key gives it: its "review" link; for your agent's task, the PR aag
+    links (its other links are Slack threads); or the one PR it links, when all its links go there or it's
+    titled Review…/Approve…; else None."""
     key = pr_key(t.get("review"))
+    agents = {pr_key(s.get("link")) for s in (t.get("aag") or {}).get("sources") or []} - {None}
+    if not key and len(agents) == 1:
+        return agents.pop()
     keys = {pr_key(s["link"]) for s in t.get("sources") or [] if s.get("link")}
     prs = keys - {None}
     if key or len(prs) != 1:
@@ -233,16 +254,19 @@ def pr_of(t):
 def settled(reg, ended, now):
     """Closes the open tasks about a PR (pr_of) that's been merged or closed: `ended` is {pr_key:
     {"merged": bool, "at": when}}. Even one whose status you set, as there's nothing left to do or
-    wait for; but once only, so a task you open again stays open. Not your agent's or Linear's (aag and
-    linear.py have the say on those). Returns whether anything changed."""
+    wait for; but once only, so a task you open again stays open. Your agent's too, as your done closes one
+    (aag.py): it stays done while aag says what it said before (a stopped aag does), and a new move from aag
+    has the say again. Not Linear's (linear.py has the say on those). Returns whether anything changed."""
     changed = False
     for t in reg["tasks"]:
         key = pr_of(t)
-        if t["status"] not in OPEN or t.get("aag") or t.get("linear") or key not in ended or t.get("ended") == key:
+        if t["status"] not in OPEN or t.get("linear") or key not in ended or t.get("ended") == key:
             continue
         e = ended[key]
         t.update(status="done", done_at=now, closed_by="gh", updated=now, ended=key,
                  evidence=f"{key} was {'merged' if e.get('merged') else 'closed without merging'}{_at(e.get('at'), now)}")
+        if t.get("aag"):
+            t["mine"] = sorted({*(t.get("mine") or []), "status"})
         changed = True
     return changed
 
@@ -267,7 +291,9 @@ def roll(reg, today):
             if t["status"] == "open":
                 t["rolled"] = t.get("rolled", 0) + 1
     cutoff = (dt.date.fromisoformat(today) - dt.timedelta(days=KEEP_CLOSED_DAYS)).isoformat()
-    reg["tasks"] = [t for t in reg["tasks"] if t["status"] in OPEN or (t.get("done_at") or today) >= cutoff]
+    longer = (dt.date.fromisoformat(today) - dt.timedelta(days=KEEP_DROPPED_DAYS)).isoformat()
+    reg["tasks"] = [t for t in reg["tasks"] if t["status"] in OPEN or (t.get("done_at") or today) >= cutoff
+                    or (t["status"] == "dropped" and things(t) and (t.get("done_at") or today) >= longer)]
     reg["rolled_on"] = today
     return True
 

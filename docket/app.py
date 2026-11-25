@@ -101,8 +101,13 @@ What counts:
 - A review is {who}'s only when they're asked by name: requested from them on GitHub, or asked in a
   message or comment. A review requested from a team they're on (a CODEOWNERS or team request, or a
   GitHub email or bot message about one) isn't a task.
+- A cc or a mention can go either way: decide from the context whether whoever tagged {who} wants
+  something from them (a review, an answer, a decision) or only keeps them in the loop. Read the whole
+  thread for it, the parent too: the ask is often there while {who}'s tag is only in a reply. "Not
+  urgent" sets the priority and the do-date, not whether it's a task.
 - Don't add what's on the list already, or what's closed above; update an open task instead, and only
-  when something changed. A dropped task means it isn't {who}'s to do. Leave out updates
+  when something changed. A dropped task means it isn't {who}'s to do, and neither is anything later about the
+  same thing (a new email or message on the same report, PR or issue). Leave out updates
   that change nothing.
 - "done" needs evidence: a reply sent, a question answered by someone else, a PR approved, merged or
   closed, a decision posted. A draft isn't sent, an approval isn't signed, a calendar block isn't done,
@@ -145,7 +150,7 @@ RULES = ""
 RULES_FROM = []
 AFTER_REFRESH = []
 STATE = dict  # more for the page's state: a function returning a dict
-POSTS = {}  # more POST routes: {"/path": function(body)}; the page gets the state back
+POSTS = {}  # more POST routes: {"/path": function(body)}; the page gets the state back (set below: /queue/move)
 
 
 def _env():
@@ -254,7 +259,9 @@ def refresh():
     except Exception as e:
         print(f"refresh: couldn't list sessions: {e!r}", file=sys.stderr)
         titles = []
-    closed = "\n".join(f"{t['status']} · {t['title']}" for t in reg["tasks"] if t["status"] in tasks.CLOSED) or "(none)"
+    recent = (dt.date.fromisoformat(today) - dt.timedelta(days=tasks.KEEP_CLOSED_DAYS)).isoformat()
+    closed = "\n".join(f"{t['status']} · {t['title']}" for t in reg["tasks"]
+                        if t["status"] in tasks.CLOSED and (t.get("done_at") or today) >= recent) or "(none)"
     rules = "\n\n".join(x for x in (RULES, *(f() for f in RULES_FROM)) if x)
     out = _ask(REFRESH.format(who=_who(), now=started.strftime("%A %Y-%m-%d %H:%M"),
                               since=since, tasks=lines, closed=closed, sessions="\n".join(titles) or "(none)")
@@ -277,6 +284,7 @@ PRS = ("query($q:String!){viewer{login} search(query:$q,type:ISSUE,first:30){nod
        "url isDraft updatedAt reviewDecision mergeable author{login ... on User{name databaseId}} repository{nameWithOwner} "
        "reviewRequests(first:20){nodes{requestedReviewer{... on User{login}}}} "
        "latestReviews(first:20){nodes{author{login} state submittedAt}} "
+       "reviewThreads(last:50){nodes{isResolved comments(first:10){nodes{author{login}}}}} "
        "commits(last:1){nodes{commit{committedDate statusCheckRollup{state}}}}}}}}")
 SEARCH = {"mine": "is:pr is:open author:@me archived:false sort:updated-desc",
           "asked": "is:pr is:open user-review-requested:@me archived:false sort:updated-desc",
@@ -284,6 +292,8 @@ SEARCH = {"mine": "is:pr is:open author:@me archived:false sort:updated-desc",
 PRS_EVERY = 180
 _prs = {"at": 0, "items": [], "reviewing": [], "error": None}
 _prs_lock = threading.Lock()
+_queue_data = []  # the shared orders as last read (_read_queue), for moving a PR in one
+_moves = [0]  # moves made here: a read that began before one doesn't put the old order back
 
 
 def _last_commit(n):
@@ -313,9 +323,17 @@ def _my_review(n, me):
     return next((r for r in (n.get("latestReviews") or {}).get("nodes") or [] if (r.get("author") or {}).get("login") == me), None)
 
 
+def _open_threads(n, me):
+    """How many unresolved review threads on a PR you're in."""
+    return sum(1 for t in (n.get("reviewThreads") or {}).get("nodes") or [] if not t.get("isResolved") and any(
+        (c.get("author") or {}).get("login") == me for c in (t.get("comments") or {}).get("nodes") or []))
+
+
 def _review_state(n, me):
     """Where a PR you review stands from your side: "review requested", "re-requested", "new commits"
-    (since your last review), "waiting on author" (you commented or asked for changes) or "approved"."""
+    (since your last review), "waiting on author" (you asked for changes, or a thread you're in is still
+    open), "not approved" (you only commented, every thread you're in is resolved, and you haven't
+    approved: likely the approve you forgot) or "approved"."""
     asked = any(((r.get("requestedReviewer") or {}).get("login")) == me for r in (n.get("reviewRequests") or {}).get("nodes") or [])
     last = _my_review(n, me)
     if asked:
@@ -324,7 +342,11 @@ def _review_state(n, me):
         return "review requested"
     if (_last_commit(n).get("committedDate") or "") > (last.get("submittedAt") or ""):
         return "new commits"
-    return "approved" if last.get("state") == "APPROVED" else "waiting on author"
+    if last.get("state") == "APPROVED":
+        return "approved"
+    if last.get("state") == "COMMENTED" and not _open_threads(n, me):
+        return "not approved"
+    return "waiting on author"
 
 
 def _pr(n, state):
@@ -332,6 +354,127 @@ def _pr(n, state):
             "url": n["url"] if n["url"].startswith("https://") else "", "updated": n["updatedAt"][:19],
             "author": ((n.get("author") or {}).get("login") or "")[:60], "author_name": ((n.get("author") or {}).get("name") or "")[:80],
             "author_id": (n.get("author") or {}).get("databaseId"), "draft": bool(n.get("isDraft")), "state": state}
+
+
+# A shared order for PRs: GitHub Projects named in settings "queues" (their URLs), each one list of PRs in
+# the order the team set by dragging, with a Status (Merge now, Review now, Next, Parked…). A PR in one
+# shows its place and status, and the PRs you review sort by it.
+QUEUE = ("query($login:String!,$n:Int!,$after:String){owner:%s(login:$login){projectV2(number:$n){id title url "
+         "items(first:100,after:$after,orderBy:{field:POSITION,direction:ASC}){pageInfo{hasNextPage endCursor} "
+         "nodes{id isArchived content{... on PullRequest{url state}} "
+         "fieldValueByName(name:\"Status\"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}")
+QUEUE_URL = re.compile(r"^https://github\.com/(orgs|users)/([^/]+)/projects/(\d+)")
+
+
+def _read_queue(gh, url):
+    """A queue's open PRs in its order: {"name", "url", "prs": [(pr url, status)]}, and for moving one (move_queued)
+    the project's "id", each open PR's item id ("ids": {pr url: item id}) and every item id in order ("order").
+    Up to 500 items."""
+    m = QUEUE_URL.match(url or "")
+    if not m:
+        raise RuntimeError(f"not a GitHub project: {url}")
+    kind, login, number = m.groups()
+    q, after, name, items = QUEUE % ("organization" if kind == "orgs" else "user"), None, url, []
+    pid, ids, order = None, {}, []
+    for _ in range(5):
+        r = subprocess.run([gh, "api", "graphql", "-f", "query=" + q, "-f", f"login={login}", "-F", f"n={number}",
+                            *(["-f", f"after={after}"] if after else [])], env=_env(), capture_output=True, text=True, timeout=40)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout).strip()
+            raise RuntimeError("gh needs the read:project scope: gh auth refresh -s read:project" if "read:project" in err else err[-200:])
+        proj = ((json.loads(r.stdout).get("data") or {}).get("owner") or {}).get("projectV2")
+        if not proj:
+            raise RuntimeError(f"can't read {url}")
+        name, page, pid = proj.get("title") or name, proj["items"], proj.get("id")
+        order += [i["id"] for i in page["nodes"] if i.get("id")]
+        shown = [i for i in page["nodes"] if not i.get("isArchived") and (i.get("content") or {}).get("state") == "OPEN"]
+        items += [(i["content"]["url"], (i.get("fieldValueByName") or {}).get("name") or "") for i in shown]
+        ids.update((i["content"]["url"], i["id"]) for i in shown if i.get("id"))
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        after = page["pageInfo"]["endCursor"]
+    return {"name": name, "url": url, "prs": items, "id": pid, "ids": ids, "order": order}
+
+
+MOVE = ("mutation($p:ID!,$i:ID!,$a:ID){updateProjectV2ItemPosition(input:{projectId:$p,itemId:$i,afterId:$a})"
+        "{items(first:1){nodes{id}}}}")
+
+
+def _after(qu, pr, step):
+    """Where a PR goes one place up (step -1) or down (+1) among the queue's open PRs: the item id it's put
+    after (None: first), or False when it's at that end already."""
+    shown = [u for u, _ in qu["prs"]]
+    at = shown.index(pr)
+    to = at + step
+    if to < 0 or to >= len(shown):
+        return False
+    if step > 0:
+        return qu["ids"][shown[to]]
+    full = qu["order"].index(qu["ids"][shown[to]])  # above the one above: after whatever item is before that one
+    return qu["order"][full - 1] if full > 0 else None
+
+
+def move_queued(body):
+    """POST /queue/move {pr, dir: up|down}: the PR one place up or down in its shared order, on GitHub, so
+    everyone's Docket has it at their next read; this one has it at once."""
+    pr, step = str(body.get("pr") or ""), {"up": -1, "down": 1}.get(body.get("dir"))
+    gh = _which("gh")
+    if not gh or step is None:
+        raise ValueError("gh isn't installed" if not gh else "dir is up or down")
+    with _prs_lock:
+        qu = next((q for q in _queue_data if pr in q["ids"]), None)
+    if not qu:
+        raise ValueError("that PR isn't in a shared order (or it was read before its move): try again in a minute")
+    after = _after(qu, pr, step)
+    if after is not False:
+        r = subprocess.run([gh, "api", "graphql", "-f", "query=" + MOVE, "-f", f"p={qu['id']}", "-f", f"i={qu['ids'][pr]}",
+                            *(["-f", f"a={after}"] if after else [])], env=_env(), capture_output=True, text=True, timeout=40)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout).strip()
+            raise RuntimeError("gh needs the project scope to move PRs: gh auth refresh -s project"
+                               if "scope" in err.lower() else err[-200:])
+    # the queue as GitHub has it now, worked out here: a read of the whole project takes seconds (more when GitHub
+    # is slow), so the page has the move at once and the next read, soon, checks it
+    prs, at, order = list(qu["prs"]), [u for u, _ in qu["prs"]].index(pr), [i for i in qu["order"] if i != qu["ids"][pr]]
+    if after is not False:
+        prs.insert(at + step, prs.pop(at))
+        order.insert(order.index(after) + 1 if after in order else 0, qu["ids"][pr])
+    fresh = {**qu, "prs": prs, "order": order if after is not False else qu["order"]}
+    with _prs_lock:
+        _queue_data[:] = [fresh if q["url"] == qu["url"] else q for q in _queue_data]
+        _moves[0] += 1
+        _publish_queues()
+        _prs["at"] = min(_prs["at"], time.time() - PRS_EVERY + 30)  # read again in half a minute
+
+
+def _publish_queues():
+    """The shared orders as the page has them (call with _prs_lock): each PR's place on the PRs, and every
+    queued PR, for the tasks about one."""
+    for p in [*_prs.get("items", []), *_prs.get("reviewing", [])]:
+        p.pop("queue", None)
+    _place(_prs.get("items", []), _queue_data)
+    _prs["reviewing"] = _by_queue(_place(_prs.get("reviewing", []), _queue_data))
+    _prs["queues"] = [{"name": q["name"], "url": q["url"], "count": len(q["prs"]),
+                       "prs": [{"url": u, "rank": i + 1, "status": s[:40]} for i, (u, s) in enumerate(q["prs"])]}
+                      for q in _queue_data]
+
+
+def _place(prs, queues):
+    """Each PR gets its place in the first queue that has it: "queue" = {name, url, rank, of, status}."""
+    for p in prs:
+        for qu in queues:
+            at = next((i for i, (u, _) in enumerate(qu["prs"]) if u == p["url"]), None)
+            if at is not None:
+                p["queue"] = {"name": qu["name"][:80], "url": qu["url"], "rank": at + 1, "of": len(qu["prs"]),
+                              "status": qu["prs"][at][1][:40]}
+                break
+    return prs
+
+
+def _by_queue(prs):
+    """Queued PRs first, in the queue's order; the rest after them, newest activity first."""
+    prs = sorted(prs, key=lambda x: x["updated"], reverse=True)
+    return sorted(prs, key=lambda x: (x["queue"]["url"], x["queue"]["rank"]) if x.get("queue") else ("~",))
 
 
 def prs():
@@ -347,7 +490,7 @@ def prs():
 
 
 def _read_prs():
-    gh, approved = _which("gh"), None
+    gh, approved, moves = _which("gh"), None, _moves[0]
     try:
         if not gh:
             raise RuntimeError("gh isn't installed")
@@ -367,9 +510,17 @@ def _read_prs():
                 reviewing.append(_pr(n, _review_state(n, me)))
                 if reviewing[-1]["state"] == "approved":
                     ok[tasks.pr_key(n["url"])] = _my_review(n, me).get("submittedAt")
+        mine, queues, qerr = [_pr(n, _pr_state(n)) for n in found["mine"]], [], None
+        for url in store.settings().get("queues") or []:
+            try:
+                queues.append(_read_queue(gh, url))
+            except Exception as e:
+                qerr = str(e)[-200:]
         with _prs_lock:
-            _prs.update(items=[_pr(n, _pr_state(n)) for n in found["mine"]], read=True, error=None,
-                        reviewing=sorted(reviewing, key=lambda x: x["updated"], reverse=True))
+            _prs.update(items=mine, reviewing=reviewing, read=True, error=None, queue_error=qerr)
+            if (queues or not qerr) and moves == _moves[0]:  # a failed read keeps the last orders, so does one a move overtook
+                _queue_data[:] = queues
+            _publish_queues()
         approved = ok
     except Exception as e:
         print(f"page: couldn't list PRs: {e!r}", file=sys.stderr)
@@ -418,7 +569,7 @@ def _close_ended(gh):
     your PRs, without waiting for the next refresh."""
     try:
         keys = {tasks.pr_of(t) for t in tasks.load()["tasks"]
-                if t["status"] in tasks.OPEN and not t.get("aag") and not t.get("linear")} - {None}
+                if t["status"] in tasks.OPEN and not t.get("linear")} - {None}
         ended = _ended(gh, keys) if keys else {}
         if ended:
             with tasks.LOCK:
@@ -500,6 +651,10 @@ class Page:
                 "hours": store.settings().get("hours", "09:00-18:00"), "order": reg.get("order", []), **STATE()}
 
 
+POSTS["/queue/move"] = move_queued
+MAX_BODY = 1 << 20  # a POST's body: a note or a task is a few hundred bytes
+
+
 def serve(port=PORT, index=None, routes=None):
     """The page at http://127.0.0.1:<port>. Returns (server, page); the server runs in a thread. An app
     that carries Docket can serve its own page instead (`index`, a path) and add GET routes of its own
@@ -510,6 +665,12 @@ def serve(port=PORT, index=None, routes=None):
              **{f"/{name}": (WEB / name, kind) for name, kind in (("docket.js", "text/javascript"), ("page.js", "text/javascript"),
                                                                 ("esc.js", "text/javascript"), ("docket.css", "text/css"))}}
     routes = routes or {}
+    # Never inside another site's frame (clickjacking). Docket's own page also loads and calls only this
+    # server, so a link that slipped through can't load or send anything elsewhere; an app's own page
+    # (`index`) sets its own rules.
+    policy = "frame-ancestors 'none'" if index else (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
     # which page code is on disk: when an update changes it, an open page reloads itself (page.js)
     code = lambda: str(max(path.stat().st_mtime_ns for path, _ in files.values()))
 
@@ -526,6 +687,8 @@ def serve(port=PORT, index=None, routes=None):
             if (self.headers.get("Host") or "").split(":")[0] not in ("127.0.0.1", "localhost"):
                 return self._send(403, b'{"error": "local only"}')
             url = urlparse(self.path)
+            if self.command == "POST" and not 0 <= int(self.headers.get("Content-Length") or 0) <= MAX_BODY:
+                return self._send(413, b'{"error": "too big"}')
             if self.command == "GET" and url.path in files:
                 file, kind = files[url.path]
                 return self._send(200, file.read_bytes(), f"{kind}; charset=utf-8")
@@ -565,6 +728,10 @@ def serve(port=PORT, index=None, routes=None):
             self.send_header("Content-Type", content_type or "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")  # an update must reach the page without a hard reload
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", policy)
             self.end_headers()
             self.wfile.write(body)
 

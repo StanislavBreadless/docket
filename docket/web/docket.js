@@ -18,6 +18,8 @@
 //     can(task, action): bool         optional: a button this task doesn't get
 //     listed(task, data): bool        optional: a task that stays in the lists while it waits or is put off
 //                         (greyed there, not folded away): something still to decide on
+//     mark(task, data): class         optional: a class on the task's row (a page's own marking)
+//     working(task, action): text     optional: said at once while an action that takes a while runs
 //     busy(task, data): bool          optional: someone else is on it now (your agent): greyed like a
 //                         waiting one, and not marked next
 //     places(task, data, action): [{id, title, blocked}] or null   optional: the button opens a list
@@ -35,7 +37,8 @@
 //                         next, and above it, past a divider, the tasks not in your order yet. A row
 //                         opens in place (click, space); drag rows, Shift+J/K or To top / To end to
 //                         place them, which calls order(task ids in your order, task ids shown): data
-//   Buttons with data-act="action" data-value="v" in more(…, "now") call act(task, action, v).
+//   Buttons with data-act="action" data-value="v" in more(…, "now") call act(task, action, v). Data with a
+//   notice (from act or sideClick) shows it.
 //   })  →  {reload(), render(), select(task id), data}
 (() => {
   const PRI = ["P0", "P1", "P2"];
@@ -190,7 +193,7 @@
           : opts.queue && src.minutes ? `<button data-row="done" title="Done" aria-label="Done">✓</button>` + REMIND.map(([m, l, w]) => `<button data-row="m${m}" title="Remind me in ${w}">${l}</button>`).join("")
           : `<button data-row="done" title="Done" aria-label="Done">✓</button><button data-row="snooze1" title="Tomorrow" aria-label="Snooze to tomorrow">→</button>`;
         const cls = (t.id === sel ? " sel" : "") + (opts.closed ? " closed" : "") + ((opts.queue || (src.listed && !opts.closed)) && (t.status === "waiting" || !due(t) || (src.busy && src.busy(t, data))) ? " blocked" : "") + (opts.unsorted?.has(t.id) ? " tosort" : "")
-          + (t === next ? " next" : "") + (opts.queue && t.id === opened ? " opened" : "");
+          + (t === next ? " next" : "") + (opts.queue && t.id === opened ? " opened" : "") + (src.mark && src.mark(t, data) ? " " + src.mark(t, data) : "");
         return `<div class="row${cls}" data-id="${esc(t.id)}">${opts.queue ? `<span class="grip" title="Drag to reorder (or Shift+J / Shift+K)">⠿</span>` : ""}${pri(t)}
           <div class="body"><div class="t">${t === next ? `<span class="nextmark">next</span>` : ""}${esc(t.title)}</div>${subline ? `<div class="s">${subline}</div>` : ""}</div>
           <div class="quick">${quick}</div></div>`;
@@ -221,9 +224,11 @@
     }
 
     async function act(t, action, value, label, keep) {
-      const before = { ...t };
+      const before = { ...t }, wait = src.working && src.working(t, action);
+      if (wait) toast(wait);
       try { data = await src.act(t, action, value); } catch (e) { return toast(e.message || "That didn't work."); }
       if (label) { lastUndo = before; toast(`${label}: ${t.title}`, true); }
+      else if (data && data.notice) toast(data.notice);
       if (sel === t.id && action !== "star" && !keep) sel = null;
       render();
     }
@@ -355,7 +360,7 @@
     part("side").addEventListener("click", async (e) => {
       if (!src.sideClick) return;
       const out = await src.sideClick(e, data);
-      if (out) { data = out; render(); }
+      if (out) { data = out; render(); if (out.notice) toast(out.notice); }
     });
     if (src.add) part("add").addEventListener("submit", async (e) => {
       e.preventDefault();

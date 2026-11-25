@@ -44,6 +44,30 @@ class Rules(unittest.TestCase):
         tasks.merge(reg, {"new": [{"title": "merge the release-notes PR"}]}, DAY, NOW)
         self.assertEqual(len(reg["tasks"]), 1)
 
+    def test_a_dropped_report_covers_later_emails_about_it(self):
+        mail = lambda n: [{"label": "email from Immunefi", "link": f"https://mail.google.com/mail/#all/thread-f:{n}"}]
+        reg = {"tasks": [task(title="Read new message on Immunefi report #12345 (High: example bug)", sources=mail(1)),
+                         task(title="Triage new Immunefi report #12399 (Medium: another example)", sources=mail(2))]}
+        reg["tasks"][0].update(status="dropped", done_at=NOW)
+        reg["tasks"][1].update(status="done", done_at=NOW)
+        tasks.merge(reg, {"new": [
+            {"title": "Read another new message on Immunefi report 12345", "sources": mail(3)},
+            {"title": "Decide the verdict on the example bug report",
+             "sources": [{"label": "Immunefi", "link": "https://bugs.immunefi.com/dashboard/submission/12345"}]},
+            {"title": "Read new message on Immunefi report #12399", "sources": mail(4)},  # done, not dropped: new work
+            {"title": "Triage new Immunefi report #12346", "sources": mail(5)},
+        ]}, DAY, NOW)
+        self.assertEqual([t["title"] for t in reg["tasks"][2:]],
+                         ["Read new message on Immunefi report #12399", "Triage new Immunefi report #12346"])
+        # kept 60 days, so the report's later emails stay off; a dropped task about nothing in particular goes at 14
+        reg["tasks"].append(task(title="Reply to Alex"))
+        reg["tasks"][-1].update(status="dropped", done_at=NOW)
+        tasks.roll(reg, "2026-04-01")
+        self.assertEqual({t["title"] for t in reg["tasks"] if t["status"] in tasks.CLOSED},
+                         {"Read new message on Immunefi report #12345 (High: example bug)"})
+        tasks.roll(reg, "2026-05-02")
+        self.assertEqual([t for t in reg["tasks"] if t["status"] in tasks.CLOSED], [])
+
     def test_an_overdue_task_rolls_to_today_and_counts(self):
         reg = {"tasks": [task()]}
         reg["tasks"][0]["do"] = "2026-03-01"
@@ -326,6 +350,67 @@ class Prs(unittest.TestCase):
         self.assertEqual(s(reviews=[("me", "APPROVED", "2026-03-02T11:00:00Z"), ("sam", "COMMENTED", "2026-03-02T12:00:00Z")]), "approved")
         self.assertEqual(s(reviews=[("me", "DISMISSED", "2026-03-02T11:00:00Z")]), "review requested")
 
+    def test_only_commented_with_your_threads_resolved_is_the_approve_you_forgot(self):
+        n = self.reviewed(reviews=[("me", "COMMENTED", "2026-03-02T11:00:00Z")])
+        thread = lambda done, *who: {"isResolved": done, "comments": {"nodes": [{"author": {"login": w}} for w in who]}}
+        self.assertEqual(app._review_state(n, "me"), "not approved")
+        n["reviewThreads"] = {"nodes": [thread(True, "me"), thread(False, "sam")]}
+        self.assertEqual(app._review_state(n, "me"), "not approved")
+        n["reviewThreads"]["nodes"].append(thread(False, "sam", "me"))
+        self.assertEqual(app._review_state(n, "me"), "waiting on author")
+
+    def test_a_shared_queue_places_prs_and_orders_the_ones_you_review(self):
+        url = lambda n: f"https://github.com/Org/repo/pull/{n}"
+        page = lambda nodes, more=False: mock.Mock(returncode=0, stdout=json.dumps({"data": {"owner": {"projectV2": {
+            "title": "merge queue", "url": "x", "items": {"pageInfo": {"hasNextPage": more, "endCursor": "c"}, "nodes": nodes}}}}}))
+        item = lambda n, st, state="OPEN", arch=False: {"isArchived": arch, "content": {"url": url(n), "state": state},
+                                                         "fieldValueByName": {"name": st} if st else None}
+        q = "https://github.com/orgs/Org/projects/4"
+        with mock.patch.object(app.subprocess, "run", side_effect=[
+                page([item(3, "Merge now"), item(9, "", "MERGED"), item(8, "Parked", arch=True)], True), page([item(1, "Review now")])]) as run:
+            got = app._read_queue("gh", q)
+        self.assertEqual(got["prs"], [(url(3), "Merge now"), (url(1), "Review now")])
+        self.assertIn("after=c", run.call_args.args[0])
+        prs = [{"url": url(n), "updated": u} for n, u in ((5, "2026-03-02T12:00"), (1, "2026-03-01T00:00"), (3, "2026-02-01T00:00"))]
+        out = app._by_queue(app._place(prs, [got]))
+        self.assertEqual([p["url"] for p in out], [url(3), url(1), url(5)])
+        self.assertEqual(out[1]["queue"], {"name": "merge queue", "url": q, "rank": 2, "of": 2, "status": "Review now"})
+        with self.assertRaises(RuntimeError):
+            app._read_queue("gh", "https://github.com/Org/repo")
+
+    def test_moving_a_queued_pr_moves_it_on_github_among_the_open_ones(self):
+        url = lambda n: f"https://github.com/Org/repo/pull/{n}"
+        q = "https://github.com/orgs/Org/projects/4"
+        # items in GitHub's order: I1 (#1), I2 (#2 merged: not shown), I3 (#3), I4 (#4)
+        qu = {"name": "merge queue", "url": q, "id": "P", "prs": [(url(1), "Review now"), (url(3), ""), (url(4), "Next")],
+              "ids": {url(1): "I1", url(3): "I3", url(4): "I4"}, "order": ["I1", "I2", "I3", "I4"]}
+        self.assertEqual(app._after(qu, url(4), -1), "I2")  # above #3: after what's before #3
+        self.assertIsNone(app._after(qu, url(3), -1))  # above #1: first
+        self.assertEqual(app._after(qu, url(1), 1), "I3")
+        self.assertIs(app._after(qu, url(1), -1), False)
+        self.assertIs(app._after(qu, url(4), 1), False)
+        moved = {**qu, "prs": [(url(1), "Review now"), (url(4), "Next"), (url(3), "")], "order": ["I1", "I2", "I4", "I3"]}
+        with mock.patch.object(app, "_queue_data", [qu]), mock.patch.object(app, "_which", return_value="gh"), \
+                mock.patch.dict(app._prs, {"at": 0}), \
+                mock.patch.dict(app._prs, {"items": [], "reviewing": [{"url": url(4), "updated": "x"}]}), \
+                mock.patch.object(app.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="{}")) as run:
+            app._queue_data[:] = [qu]
+            app.move_queued({"pr": url(4), "dir": "up"})
+            self.assertIn("a=I2", run.call_args.args[0])
+            self.assertIn("i=I4", run.call_args.args[0])
+            self.assertEqual(app._prs["reviewing"][0]["queue"]["rank"], 2)
+            self.assertEqual([x["url"] for x in app._prs["queues"][0]["prs"]], [url(1), url(4), url(3)])
+            run.reset_mock()
+            app.move_queued({"pr": url(1), "dir": "up"})  # at the top already: nothing to tell GitHub
+            run.assert_not_called()
+            with self.assertRaises(ValueError):
+                app.move_queued({"pr": url(9), "dir": "up"})
+            # worked out here, not read again (a read takes seconds): the next read, soon, checks it
+            with mock.patch.object(app, "_read_queue", side_effect=AssertionError("read at once")):
+                app.move_queued({"pr": url(3), "dir": "up"})
+            self.assertEqual([x["url"] for x in app._prs["queues"][0]["prs"]], [url(1), url(3), url(4)])
+            self.assertEqual(app._queue_data[0]["order"], ["I1", "I2", "I3", "I4"])  # the next move is worked out from it
+
     def test_a_review_you_approved_closes_without_a_refresh(self):
         url = "https://github.com/Org/repo/pull/7"
         asked = task(title="Look at the CI pin", review=url + "/files")
@@ -431,6 +516,20 @@ class Page(unittest.TestCase):
         code, body = self.call("/task", {"action": "add", "value": "Write the launch post", "kind": "deep"}, {"X-Docket": "1"})
         self.assertEqual(code, 200)
         self.assertIn("Write the launch post", [t["title"] for t in json.loads(body)["tasks"]])
+
+    def test_never_in_a_frame_and_only_this_server(self):
+        with urllib.request.urlopen(self.url + "/", timeout=10) as r:
+            self.assertEqual(r.headers["X-Frame-Options"], "DENY")
+            self.assertIn("frame-ancestors 'none'", r.headers["Content-Security-Policy"])
+            self.assertIn("connect-src 'self'", r.headers["Content-Security-Policy"])
+
+    def test_a_huge_body_is_refused(self):
+        req = urllib.request.Request(self.url + "/task", data=b"{}", headers={"X-Docket": "1", "Content-Length": str(app.MAX_BODY + 1)})
+        try:
+            code = urllib.request.urlopen(req, timeout=10).status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        self.assertEqual(code, 413)
 
     def test_a_bad_action_is_a_400(self):
         self.assertEqual(self.call("/task", {"id": "nope", "action": "done"}, {"X-Docket": "1"})[0], 400)

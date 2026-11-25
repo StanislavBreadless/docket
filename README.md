@@ -18,11 +18,13 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
   - A task is done only with evidence: a draft isn't sent, silence isn't done.
   - A review asked of you is done once `gh` shows you approved the PR, within a few minutes,
     without waiting for the next refresh.
-  - A task about one PR (a review, or a task whose links all go to that PR) is done once the PR is
-    merged or closed, checked with `gh` every few minutes. Open it again and it stays open.
+  - A task about one PR (a review, a task whose links all go to that PR, or your agent's task for its PR)
+    is done once the PR is merged or closed, checked with `gh` every few minutes, even while your agent
+    is off. Open it again and it stays open.
   - Each refresh also rechecks the open tasks' own links: a Slack question that was answered (by you or
     someone else), a closed issue, a merged PR, each closes its task with the link as evidence.
-  - A task you dropped or finished doesn't come back.
+  - A task you dropped or finished doesn't come back. Dropping one about an Immunefi report drops the report: a later
+    email about it (a new message, a verdict) isn't a new task, for 60 days.
   - An overdue task rolls to today and shows how often it slipped.
 - **Reply to Claude** on a task (`c`): "ask Sam for a review in the team thread". It finds the thread,
   links it, rewrites the next step and answers under your note, usually in about a minute. If the note
@@ -64,8 +66,12 @@ no account, and nothing to install beyond Python. The task list is a JSON file i
   - Today's meetings, with a now line and free gaps.
   - Your **pull requests** (read with `gh`), in two tabs. **Mine** groups them as ready to merge, needs
     you (conflicts, CI failing, changes requested), waiting, and drafts. **Reviewing** groups the PRs
-    you're asked to review or have reviewed: review requested, new commits since your review, waiting
-    on the author, approved.
+    you're asked to review or have reviewed: review requested, new commits since your review,
+    **reviewed, not approved** (you only commented and every thread you're in is resolved: likely the
+    approve you forgot), waiting on the author, approved.
+  - **A shared order** for the team's PRs, if you name one ([below](#shared-order)): a PR in it says its
+    place and status (**#3 · Review now**), Reviewing lists the queued ones first, in that order, and
+    **↑ ↓** move one in it for the whole team.
   - Click a card's title to fold it to just the title, and again to open it; Docket remembers which
     are folded.
   - **Your agent**, always: whether it's on, off, paused or offline, what to sign, and every task it
@@ -111,12 +117,33 @@ The folder is `$DOCKET_HOME`, or `~/.local/share/docket` by default. In it, `set
 | `every_min` | minutes between refreshes (default 15; each is a Claude run, so fewer use less of your plan) |
 | `model` | the Claude model for refreshes and replies (default `sonnet`) |
 | `agent_paths` | folders where your background agents run: their sessions are only counted, not listed |
-| `aag` | your agent's feed ([below](#your-agent-aag)): unset for the aag on this computer, `"ssh HOST"` where aag runs on a server, or `"off"` |
+| `aag` | your agent's feed ([below](#your-agent-aag)): unset for the aag on this computer, `"ssh HOST"` where aag runs on a server, `"vm"` where it runs in auto-agents' VM on this Mac, or `"off"` |
 | `linear_key` | a Linear personal API key for the Work tab ([below](#work-linear)); or `$LINEAR_API_KEY` |
 | `linear_team` | the team a new issue from **create ↗** goes to (a key like `EVM`); else your first team as Linear says |
 | `reviews_days` | how far back `review:` comments on Linear count (default 30) |
 
 The page's port is `$DOCKET_PORT` (default 8766).
+
+### A shared order for PRs <a id="shared-order"></a>
+
+When a repo has more open PRs than anyone can keep in their head, keep one ranked list the whole team
+sees: a GitHub Project with the PRs as items, dragged into the order you'll review and merge them, and a
+**Status** field (Merge now, Review now, Next, Parked; any name with "now" in it is shown bold). Name it
+in settings.json:
+
+```json
+{"queues": ["https://github.com/orgs/matter-labs/projects/123"]}
+```
+
+Docket reads it with `gh` along with your PRs (every few minutes; archived items and merged or closed PRs
+are left out). `gh` needs the project scope once: `gh auth refresh -s project` (`read:project` to only read it).
+
+Your tasks about a PR in it (a review, your agent's PR, a Linear issue that links it) are **team work**: purple,
+with their place (**team #3 · Review now**), and in Work whether or not you placed them. Among themselves they
+keep the team's order; your other tasks go anywhere between them. A drag that would put one past another is
+shown as the team has it. **↑ ↓** on one (in Work, or on the PR in Reviewing) moves it a place in the Project on
+GitHub, for everyone: each Docket has it at its next read. A PR whose Status says Parked keeps its place label
+but isn't team work.
 
 ### Your agent (aag)
 
@@ -128,15 +155,19 @@ from two places that make one list:
 - **aag's own feed, when it can be read.** Every minute Docket runs `aag status --json`: the aag on this
   computer, found by itself, or `"ssh HOST"` where aag runs on a server. Over SSH it never asks for a
   password (BatchMode), and nothing has to listen on the server. Use `"ssh HOST /path/to/aag"` when
-  `aag` isn't on the PATH an SSH command gets there, and `"off"` for no feed.
+  `aag` isn't on the PATH an SSH command gets there, and `"off"` for no feed. When aag runs in
+  auto-agents' VM on this Mac (Lima, `vm/aag-vm`), use `"vm"`: Docket runs `aag-vm aag status --json`,
+  with the script on the PATH or in `~/programming/auto-agents/vm` (or `"vm /path/to/aag-vm"`).
 
 How the feed's tasks show:
 
 - A task whose next move is yours (say go, review, sign, merge) is on the list, linked to its DM thread
   and its PR: a quick one under **Your agent** in Triage, a deep one (a review of your own PR) in Work,
-  and one for a PR of a Linear issue on the issue's card in Work. **→ Work** / **→ Triage** moves it. One the agent works on, or that waits on others, is under **Waiting**. A review the agents agree on
-  waits too, on the humans (the author, the other reviewers, the merge), as aag's dashboard has it, until
-  aag closes it; it's your move when aag asks for your approval. A finished one is under **Handled
+  and one for a PR of a Linear issue on the issue's card in Work. **→ Work** / **→ Triage** moves it. One the agent works on, or that waits on others, is under **Waiting**. A review your agent does
+  because someone else's agent asked, or one the agents agree on, isn't on your list: you aren't
+  requested, and may never be (the PR's author marks it ready and picks the human reviewers). It's on
+  the **Your agent** card only. A review you asked your agent for stays on your list while it works. It
+  comes to your list, as your move, when aag asks for your approval. A finished one is under **Handled
   today**. A task leaves the list when aag stops listing it.
 - The **Your agent** card on the side has the rest: who has each move, what each agent is doing now,
   where each PR stands, and the links. When aag can't be read, the card keeps the last read and says
@@ -146,7 +177,8 @@ The two meet in the DM thread: one task per thread. While the feed can be read, 
 task's status, title, next step and who's waiting. The refresh adds what the thread says (the why) and
 its links, and doesn't add tasks for the PRs aag tracks. While the feed can't be read, the refresh keeps
 these tasks from the threads, and the feed takes them back when it returns. Your snooze, priority and
-kind on one stay yours. Your done or drop stays until its next move changes. With the local aag, its
+kind on one stay yours. Your done or drop stays until its next move changes, and so does the done a
+merged or closed PR gives it. With the local aag, its
 workdir joins `agent_paths`, so its agents' sessions are only counted.
 
 ### Work (Linear)

@@ -5,25 +5,30 @@ has it from two places, and they make one list:
   any other DM, so their asks become tasks wherever aag runs.
 - aag's own feed, when it can be read: `aag status --json` every minute, on this computer (found by
   itself) or over SSH where aag runs on a server. A task whose next move is yours is open, linked to
-  its DM thread and its PR; one the agent works on, or that waits on others, is waiting (a review the
-  agents agree on waits on the humans: the author, the other reviewers, the merge, until aag closes it);
-  a finished one is handled. The side panel's "Your agent" card has the rest: what each agent is doing now,
+  its DM thread and its PR; one the agent works on, or that waits on others, is waiting; a finished one
+  is handled. A review your agent does for someone else (their agent asked), or one the agents agree on,
+  asks nothing of you: it's on the Your agent card only, until aag asks you (then it's open) or closes it. The side panel's "Your agent" card has the rest: what each agent is doing now,
   and where each PR stands.
 
 The two meet in the DM thread: one task per thread. While the feed can be read it has the say on a
 task's state (status, title, next step, who's waiting), the refresh adds what the thread says (why) and
 its links, and a task leaves the list when aag stops listing it. While it can't, the refresh keeps
 them from the threads. Your snooze, priority and kind on one stay yours; a done or drop stays until its
-next move changes.
+next move changes. So does the done Docket gives one whose PR was merged or closed (tasks.settled): a
+stopped aag goes on listing its task as it was, and the task still closes.
 
     settings.json   "aag" unset          the aag on this computer, if there is one
                     "aag": "local"       the same, and say so when there's none
                     "aag": "ssh HOST"    the one on HOST (BatchMode, so it never asks for a password)
                     "aag": "ssh HOST CMD"  runs CMD status --json there, when aag isn't on SSH's PATH
+                    "aag": "vm"          the one in auto-agents' VM on this Mac (Lima), through its `aag-vm`
+                                         script: on PATH, or in ~/programming/auto-agents/vm
+                    "aag": "vm PATH"     the same, with the aag-vm script at PATH
                     "aag": "off"         no feed, and the refresh reads the agent's DMs as any others
 """
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
@@ -33,6 +38,7 @@ import time
 from . import app, store, tasks
 
 EVERY = 60
+VM_SCRIPT = "~/programming/auto-agents/vm/aag-vm"  # auto-agents' VM on this Mac: `aag-vm aag …` runs aag inside
 TIMEOUT = 30
 STATUS = ("status", "done_at", "closed_by", "evidence")  # what your done or drop sets
 THREAD = re.compile(r"/archives/([A-Z0-9]+)/p(\d{10})(\d{6})")
@@ -56,9 +62,14 @@ def command(setting):
     if len(words) >= 2 and words[0] == "ssh":
         return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", words[1], *(words[2:] or ["aag"]),
                 "status", "--json"]
+    if words and words[0] == "vm":
+        script = os.path.expanduser(words[1]) if len(words) > 1 else (app._which("aag-vm") or os.path.expanduser(VM_SCRIPT))
+        if not os.access(script, os.X_OK):
+            raise RuntimeError(f"no aag-vm script at {script}: give its path (\"vm PATH\")")
+        return [script, "aag", "status", "--json"]
     if words == ["off"]:
         return None
-    raise RuntimeError(f'"aag" is "local", "ssh HOST" or "off", not {setting!r}')
+    raise RuntimeError(f'"aag" is "local", "ssh HOST", "vm" or "off", not {setting!r}')
 
 
 def read(cmd):
@@ -112,6 +123,16 @@ def finished(a):
     return a.get("column") == "done"
 
 
+def handed_on(a, me):
+    """A review your agent does that doesn't ask anything of you: one someone else asked it for (their
+    agent asks yours to review their PR), or one the agents agree on. You aren't requested, so it isn't
+    on your list, only on the Your agent card: it may never come to you (they may ask someone else for
+    the human review). When aag asks you (your approval, your decision) it's needs_you, and your move.
+    A review you asked your agent for yourself is yours while the agents work on it."""
+    return (a.get("role") == "reviewer" and a.get("column") != "needs_you"
+            and (a.get("requestedBy") != me or a.get("status") == "agents_done"))
+
+
 def _fields(a, me):
     """What aag says about one of its tasks, as Docket's fields."""
     pr, column = a.get("pr") or {}, a.get("column")
@@ -140,7 +161,10 @@ def sync(reg, feed, today, now):
             for k in {thread(s["link"]) for s in t["sources"]} - {None} if "title" not in t.get("mine", []) else ():
                 made.setdefault(k, t)  # not one you wrote yourself
         elif t["aag"]["id"] in listed:
-            _apply(t, listed.pop(t["aag"]["id"]), me, now)
+            a = listed.pop(t["aag"]["id"])
+            if handed_on(a, me):
+                continue
+            _apply(t, a, me, now)
             kept.append(t)
     for a in listed.values():
         t = made.pop(thread(a.get("dm")), None)
@@ -148,7 +172,7 @@ def sync(reg, feed, today, now):
             _apply(t, a, me, now)
             continue
         f = _fields(a, me)
-        if f["status"] == "done" and not str(f["done_at"]).startswith(today):
+        if handed_on(a, me) or (f["status"] == "done" and not str(f["done_at"]).startswith(today)):
             continue
         t = {"id": f"aag-{a['id']}", "kind": "deep" if a.get("phase") == "owner_review" else "quick", "priority": "P1",
              "do": today, "rolled": 0, "sessions": [], "created": now, "updated": now, "mine": []}
